@@ -514,3 +514,305 @@ def calcular_psi_temporal(df, coluna_data='data_pedido', coluna_metricas='tempo_
     print("=" * 60)
     
     return valor_psi, df_psi
+
+# Configurar estilo dos gráficos
+plt.style.use('seaborn-v0_8-darkgrid')
+sns.set_palette("husl")
+
+def plot_histograms_comparison(df_train, df_valid, df_test, df_oot, column='tempo_entrega'):
+    """
+    Plota 4 histogramas lado a lado para comparar as distribuições
+    """
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+    fig.suptitle(f'Distribuição de {column} nos Conjuntos de Dados', 
+                 fontsize=16, fontweight='bold', y=1.02)
+    
+    datasets = [
+        (df_train[column], 'Treino', '#1f77b4'),
+        (df_valid[column], 'Validação', '#2ca02c'),
+        (df_test[column], 'Teste', '#ff7f0e'),
+        (df_oot[column], 'OOT (Out of Time)', '#d62728')
+    ]
+    
+    for idx, (data, title, color) in enumerate(datasets):
+        ax = axes[idx // 2, idx % 2]
+        
+        # Remover valores NaN
+        data_clean = data.dropna()
+        
+        if len(data_clean) == 0:
+            ax.text(0.5, 0.5, 'Sem dados', 
+                   ha='center', va='center', fontsize=12)
+            ax.set_title(f'{title} (n=0)', fontsize=14, fontweight='bold')
+            continue
+        
+        # Calcular estatísticas
+        mean_val = data_clean.mean()
+        median_val = data_clean.median()
+        std_val = data_clean.std()
+        q1 = np.percentile(data_clean, 25)
+        q3 = np.percentile(data_clean, 75)
+        
+        # Determinar número de bins (regra de Sturges)
+        n_bins = min(50, int(1 + 3.322 * np.log10(len(data_clean))))
+        
+        # Plotar histograma
+        n, bins, patches = ax.hist(data_clean, bins=n_bins, alpha=0.7, color=color, 
+                                   density=True, edgecolor='black', linewidth=0.5)
+        
+        # Adicionar linhas de média e mediana
+        ax.axvline(mean_val, color='red', linestyle='--', linewidth=2, 
+                  label=f'Média: {mean_val:.2f}')
+        ax.axvline(median_val, color='green', linestyle='--', linewidth=2, 
+                  label=f'Mediana: {median_val:.2f}')
+        
+        # Adicionar KDE (Kernel Density Estimation)
+        from scipy.stats import gaussian_kde
+        try:
+            kde = gaussian_kde(data_clean)
+            x_range = np.linspace(data_clean.min(), data_clean.max(), 1000)
+            ax.plot(x_range, kde(x_range), color='black', linewidth=2, alpha=0.8, label='KDE')
+        except:
+            pass  # Ignorar se não conseguir calcular KDE
+        
+        # Configurações do gráfico
+        ax.set_title(f'{title} (n={len(data_clean):,})', fontsize=14, fontweight='bold')
+        ax.set_xlabel(column, fontsize=12)
+        ax.set_ylabel('Densidade', fontsize=12)
+        ax.legend(fontsize=9, loc='upper right')
+        ax.grid(True, alpha=0.3)
+        
+        # Adicionar estatísticas no canto
+        stats_text = (f'Média: {mean_val:.2f}\n'
+                     f'Mediana: {median_val:.2f}\n'
+                     f'Std: {std_val:.2f}\n'
+                     f'Q1: {q1:.2f}\n'
+                     f'Q3: {q3:.2f}\n'
+                     f'IQR: {q3-q1:.2f}')
+        ax.text(0.02, 0.98, stats_text, transform=ax.transAxes, fontsize=9,
+                verticalalignment='top', 
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.7))
+    
+    plt.tight_layout()
+    plt.show()
+    
+    # Retornar estatísticas para uso posterior
+    stats = {}
+    for data, title, _ in datasets:
+        data_clean = data.dropna()
+        if len(data_clean) > 0:
+            stats[title] = {
+                'n': len(data_clean),
+                'mean': data_clean.mean(),
+                'median': data_clean.median(),
+                'std': data_clean.std(),
+                'min': data_clean.min(),
+                'max': data_clean.max(),
+                'q1': np.percentile(data_clean, 25),
+                'q3': np.percentile(data_clean, 75)
+            }
+    
+    return stats
+
+def plot_boxplot_comparison(df_train, df_valid, df_test, df_oot, column='tempo_entrega'):
+    """
+    Plot boxplot comparativo dos 4 conjuntos
+    """
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), 
+                                   gridspec_kw={'height_ratios': [3, 1]})
+    
+    # Preparar dados para boxplot
+    train_data = df_train[column].dropna()
+    valid_data = df_valid[column].dropna()
+    test_data = df_test[column].dropna()
+    oot_data = df_oot[column].dropna()
+    
+    data_to_plot = [train_data, valid_data, test_data, oot_data]
+    labels = ['Treino', 'Validação', 'Teste', 'OOT']
+    colors = ['#1f77b4', '#2ca02c', '#ff7f0e', '#d62728']
+    
+    # BOXPLOT PRINCIPAL
+    box = ax1.boxplot(data_to_plot, labels=labels, patch_artist=True, 
+                     showmeans=True, meanline=True, showfliers=False,
+                     medianprops=dict(color='yellow', linewidth=2),
+                     meanprops=dict(color='red', linewidth=2))
+    
+    # Colorir as caixas
+    for patch, color in zip(box['boxes'], colors):
+        patch.set_facecolor(color)
+        patch.set_alpha(0.7)
+    
+    # Adicionar estatísticas como anotações
+    for i, data in enumerate(data_to_plot):
+        if len(data) > 0:
+            median = np.median(data)
+            mean = np.mean(data)
+            q1 = np.percentile(data, 25)
+            q3 = np.percentile(data, 75)
+            
+            # Adicionar texto com estatísticas
+            ax1.text(i + 1, median, f'Med: {median:.1f}', 
+                    ha='center', va='bottom', fontweight='bold', 
+                    fontsize=10, color='yellow', 
+                    bbox=dict(facecolor='black', alpha=0.5, boxstyle='round,pad=0.2'))
+            ax1.text(i + 1, mean, f'Média: {mean:.1f}', 
+                    ha='center', va='top', fontsize=9, color='red',
+                    bbox=dict(facecolor='white', alpha=0.7, boxstyle='round,pad=0.2'))
+    
+    ax1.set_title(f'Comparação de {column} entre Conjuntos de Dados', 
+                 fontsize=16, fontweight='bold')
+    ax1.set_ylabel(column, fontsize=12)
+    ax1.grid(True, alpha=0.3)
+    
+    # GRÁFICO DE BARRAS COM CONTAGEM E MÉDIA
+    x_pos = np.arange(len(labels))
+    counts = [len(d) for d in data_to_plot]
+    means = [d.mean() if len(d) > 0 else 0 for d in data_to_plot]
+    
+    # Barras de contagem
+    bars1 = ax2.bar(x_pos - 0.2, counts, width=0.4, label='Contagem', 
+                   color=colors, alpha=0.7)
+    ax2.set_ylabel('Nº Amostras', color='black', fontsize=11)
+    ax2.tick_params(axis='y', labelcolor='black')
+    
+    # Eixo secundário para médias
+    ax2_secondary = ax2.twinx()
+    bars2 = ax2_secondary.bar(x_pos + 0.2, means, width=0.4, label='Média', 
+                             color=['#8b0000', '#006400', '#8B4513', '#800080'], 
+                             alpha=0.7)
+    ax2_secondary.set_ylabel('Média', color='black', fontsize=11)
+    ax2_secondary.tick_params(axis='y', labelcolor='black')
+    
+    # Adicionar valores nas barras
+    for i, (bar, count) in enumerate(zip(bars1, counts)):
+        ax2.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(counts)*0.01,
+                f'{count:,}', ha='center', va='bottom', fontsize=9, fontweight='bold')
+    
+    for i, (bar, mean_val) in enumerate(zip(bars2, means)):
+        ax2_secondary.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(means)*0.01,
+                          f'{mean_val:.1f}', ha='center', va='bottom', 
+                          fontsize=9, fontweight='bold', color='darkred')
+    
+    ax2.set_xlabel('Conjunto de Dados', fontsize=12)
+    ax2.set_xticks(x_pos)
+    ax2.set_xticklabels(labels, fontsize=11)
+    ax2.set_title('Contagem de Amostras e Médias por Conjunto', fontsize=13, fontweight='bold')
+    
+    # Combinar legendas
+    lines1, labels1 = ax2.get_legend_handles_labels()
+    lines2, labels2 = ax2_secondary.get_legend_handles_labels()
+    ax2.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
+    
+    plt.tight_layout()
+    plt.show()
+    
+    # Imprimir tabela resumo
+    print("\n" + "="*80)
+    print("RESUMO ESTATÍSTICO - DISTRIBUIÇÃO DE TEMPO DE ENTREGA")
+    print("="*80)
+    
+    summary_data = []
+    for i, (data, label) in enumerate(zip(data_to_plot, labels)):
+        if len(data) > 0:
+            summary_data.append({
+                'Conjunto': label,
+                'Amostras': f"{len(data):,}",
+                'Média': f"{data.mean():.2f}",
+                'Mediana': f"{np.median(data):.2f}",
+                'Std': f"{data.std():.2f}",
+                'Min': f"{data.min():.2f}",
+                'Max': f"{data.max():.2f}",
+                'Q1': f"{np.percentile(data, 25):.2f}",
+                'Q3': f"{np.percentile(data, 75):.2f}",
+                'IQR': f"{np.percentile(data, 75) - np.percentile(data, 25):.2f}"
+            })
+    
+    summary_df = pd.DataFrame(summary_data)
+    print(summary_df.to_string(index=False))
+    print("="*80)
+
+def plot_comparative_density(df_train, df_valid, df_test, df_oot, column='tempo_entrega'):
+    """
+    Plot de densidade sobreposto para fácil comparação
+    """
+    fig, ax = plt.subplots(figsize=(14, 8))
+    
+    # Preparar dados
+    datasets = [
+        (df_train[column].dropna(), 'Treino', '#1f77b4'),
+        (df_valid[column].dropna(), 'Validação', '#2ca02c'),
+        (df_test[column].dropna(), 'Teste', '#ff7f0e'),
+        (df_oot[column].dropna(), 'OOT', '#d62728')
+    ]
+    
+    # Plotar KDE para cada conjunto
+    for data, label, color in datasets:
+        if len(data) > 0:
+            from scipy.stats import gaussian_kde
+            try:
+                kde = gaussian_kde(data)
+                x_range = np.linspace(
+                    min([d[0].min() for d in datasets if len(d[0]) > 0]),
+                    max([d[0].max() for d in datasets if len(d[0]) > 0]),
+                    1000
+                )
+                ax.plot(x_range, kde(x_range), label=label, color=color, linewidth=2.5, alpha=0.8)
+                
+                # Adicionar linha vertical na média
+                mean_val = data.mean()
+                ax.axvline(mean_val, color=color, linestyle='--', alpha=0.5, linewidth=1)
+                ax.text(mean_val, kde(mean_val)*1.05, f'{mean_val:.1f}', 
+                       color=color, fontsize=9, ha='center',
+                       bbox=dict(facecolor='white', alpha=0.7, boxstyle='round,pad=0.2'))
+            except:
+                pass
+    
+    ax.set_title(f'Comparação de Densidade de {column}', fontsize=16, fontweight='bold')
+    ax.set_xlabel(column, fontsize=12)
+    ax.set_ylabel('Densidade', fontsize=12)
+    ax.legend(fontsize=11)
+    ax.grid(True, alpha=0.3)
+    
+    # Adicionar área sombreada para IQR do Treino (referência)
+    if len(datasets[0][0]) > 0:
+        train_data = datasets[0][0]
+        q1_train = np.percentile(train_data, 25)
+        q3_train = np.percentile(train_data, 75)
+        ax.axvspan(q1_train, q3_train, alpha=0.1, color='blue', label='IQR Treino')
+    
+    plt.tight_layout()
+    plt.show()
+
+def visualize_all_comparisons(df_train, df_valid, df_test, df_oot, column='tempo_entrega'):
+    """
+    Função principal que executa todas as visualizações
+    """
+    print(f"\n📊 ANALISANDO DISTRIBUIÇÃO DE: {column}")
+    print("="*60)
+    
+    # 1. Histogramas individuais
+    print("\n1. Gerando histogramas individuais...")
+    stats = plot_histograms_comparison(df_train, df_valid, df_test, df_oot, column)
+    
+    # 2. Boxplot comparativo
+    print("\n2. Gerando boxplot comparativo...")
+    plot_boxplot_comparison(df_train, df_valid, df_test, df_oot, column)
+    
+    # 3. Densidade comparativa
+    print("\n3. Gerando gráfico de densidade comparativo...")
+    plot_comparative_density(df_train, df_valid, df_test, df_oot, column)
+    
+    return stats
+
+# Versão alternativa para trabalhar com Series diretamente
+def visualize_from_series(train_series, valid_series, test_series, oot_series, column_name='tempo_entrega'):
+    """
+    Versão para trabalhar com Series ao invés de DataFrames completos
+    """
+    # Converter para DataFrames temporários
+    df_train_temp = pd.DataFrame({column_name: train_series})
+    df_valid_temp = pd.DataFrame({column_name: valid_series})
+    df_test_temp = pd.DataFrame({column_name: test_series})
+    df_oot_temp = pd.DataFrame({column_name: oot_series})
+    
+    return visualize_all_comparisons(df_train_temp, df_valid_temp, df_test_temp, df_oot_temp, column_name)
