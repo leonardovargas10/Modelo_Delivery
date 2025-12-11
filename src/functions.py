@@ -45,6 +45,8 @@ from hyperopt import hp, tpe, fmin, Trials, STATUS_OK
 from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
 from lightgbm import LGBMRegressor, LGBMClassifier
+from sklearn.cluster import KMeans
+import networkx as nx
 import shap
 
 # Bibliotecas de Métricas de Machine Learning
