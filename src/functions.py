@@ -16,7 +16,7 @@ from matplotlib.ticker import FuncFormatter
 from matplotlib.gridspec import GridSpec
 
 # Bibliotecas de Manipulação de Tempo
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
 ## Bibliotecas de Modelagem Matemática e Estatística
 import numpy as np
