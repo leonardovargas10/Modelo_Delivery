@@ -331,16 +331,23 @@ def plota_grafico_linhas(df, x, y, nao_calcula_media, title):
         plt.tight_layout()
         plt.show()
 
-def calcular_psi_temporal(df, coluna_data='data_pedido', coluna_metricas='tempo_entrega', nome_metrica='Tempo de Entrega'):
+def calcular_psi_temporal(df, coluna_data='data_pedido', coluna_metricas='tempo_entrega', 
+                          nome_metrica='Tempo de Entrega', data_base_inicio=None, 
+                          data_base_fim=None, data_teste_inicio=None, data_teste_fim=None,
+                          tipo_analise='mensal'):
     """
-    Função única para cálculo e plotagem de PSI temporal
-    Analisa a estabilidade da distribuição de uma métrica ao longo do tempo
+    Função para cálculo e plotagem de PSI temporal com flexibilidade de períodos
     
     Parameters:
     df: DataFrame - DataFrame com os dados
     coluna_data: str - Nome da coluna de data
     coluna_metricas: str - Nome da coluna com a métrica a analisar
     nome_metrica: str - Nome amigável da métrica para exibição
+    data_base_inicio: str/datetime - Data de início do período base
+    data_base_fim: str/datetime - Data de fim do período base
+    data_teste_inicio: str/datetime - Data de início do período de teste
+    data_teste_fim: str/datetime - Data de fim do período de teste
+    tipo_analise: str - 'mensal' ou 'diária' (para formatação dos labels)
     
     Returns:
     psi_value: float - Valor do PSI calculado
@@ -353,81 +360,114 @@ def calcular_psi_temporal(df, coluna_data='data_pedido', coluna_metricas='tempo_
     
     # Converter coluna de data para datetime
     df[coluna_data] = pd.to_datetime(df[coluna_data])
-    
-    # Ordenar por data
     df = df.sort_values(coluna_data)
     
-    # Dividir dados: primeiro mês (base) vs último mês (atual)
-    data_minima = df[coluna_data].min()
-    data_maxima = df[coluna_data].max()
+    # Definir datas base e teste
+    if data_base_inicio is None:
+        data_base_inicio = df[coluna_data].min()
+    else:
+        data_base_inicio = pd.to_datetime(data_base_inicio)
     
-    dados_base = df[df[coluna_data] <= data_minima + pd.DateOffset(months=1)]
-    dados_atual = df[df[coluna_data] >= data_maxima - pd.DateOffset(months=1)]
+    if data_base_fim is None:
+        if tipo_analise == 'mensal':
+            data_base_fim = data_base_inicio + pd.DateOffset(months=1)
+        else:
+            data_base_fim = data_base_inicio + pd.DateOffset(days=1)
+    else:
+        data_base_fim = pd.to_datetime(data_base_fim)
+    
+    if data_teste_inicio is None:
+        if data_teste_fim is None:
+            data_teste_inicio = df[coluna_data].max() - pd.DateOffset(months=1)
+        else:
+            data_teste_inicio = data_teste_fim - pd.DateOffset(months=1)
+    else:
+        data_teste_inicio = pd.to_datetime(data_teste_inicio)
+    
+    if data_teste_fim is None:
+        data_teste_fim = df[coluna_data].max()
+    else:
+        data_teste_fim = pd.to_datetime(data_teste_fim)
+    
+    # Filtrar dados
+    mascara_base = (df[coluna_data] >= data_base_inicio) & (df[coluna_data] < data_base_fim)
+    mascara_teste = (df[coluna_data] >= data_teste_inicio) & (df[coluna_data] < data_teste_fim)
+    
+    dados_base = df[mascara_base].copy()
+    dados_teste = df[mascara_teste].copy()
+    
+    # Verificar se há dados suficientes
+    if len(dados_base) == 0:
+        raise ValueError(f"Nenhum dado encontrado para o período base: {data_base_inicio.date()} a {data_base_fim.date()}")
+    if len(dados_teste) == 0:
+        raise ValueError(f"Nenhum dado encontrado para o período de teste: {data_teste_inicio.date()} a {data_teste_fim.date()}")
     
     print("📊 ANÁLISE PSI TEMPORAL")
-    print(f"Período base: {dados_base[coluna_data].min().date()} a {dados_base[coluna_data].max().date()}")
-    print(f"Período atual: {dados_atual[coluna_data].min().date()} a {dados_atual[coluna_data].max().date()}")
-    print(f"Registros base: {len(dados_base):,} | Registros atual: {len(dados_atual):,}")
+    print(f"Período base: {data_base_inicio.date()} a {data_base_fim.date()}")
+    print(f"Período teste: {data_teste_inicio.date()} a {data_teste_fim.date()}")
+    print(f"Registros base: {len(dados_base):,} | Registros teste: {len(dados_teste):,}")
     
     # ============================================================================
     # ETAPA 2: CÁLCULO DO PSI
     # ============================================================================
     
-    def calcular_psi(distribuicao_base, distribuicao_atual, num_buckets=10):
+    def calcular_psi(distribuicao_base, distribuicao_teste, num_buckets=10):
         """Calcula o Population Stability Index entre duas distribuições"""
         
         # Remover valores nulos
         base_limpa = np.array(distribuicao_base[~pd.isnull(distribuicao_base)])
-        atual_limpa = np.array(distribuicao_atual[~pd.isnull(distribuicao_atual)])
+        teste_limpa = np.array(distribuicao_teste[~pd.isnull(distribuicao_teste)])
         
-        # Definir pontos de corte pelos percentis
+        # Definir pontos de corte pelos percentis da distribuição base
         pontos_corte = np.percentile(base_limpa, [i * 100/num_buckets for i in range(num_buckets + 1)])
-        pontos_corte = np.unique(pontos_corte)  # Garantir pontos únicos
+        pontos_corte = np.unique(pontos_corte)
         
         # Calcular frequências em cada bucket
         freq_base = np.histogram(base_limpa, pontos_corte)[0]
-        freq_atual = np.histogram(atual_limpa, pontos_corte)[0]
+        freq_teste = np.histogram(teste_limpa, pontos_corte)[0]
         
         # Adicionar valor pequeno para evitar divisão por zero
         freq_base = freq_base + 0.0001
-        freq_atual = freq_atual + 0.0001
+        freq_teste = freq_teste + 0.0001
         
         # Calcular proporções
         prop_base = freq_base / len(base_limpa)
-        prop_atual = freq_atual / len(atual_limpa)
+        prop_teste = freq_teste / len(teste_limpa)
         
         # Calcular componentes do PSI para cada bucket
-        componentes_psi = (prop_atual - prop_base) * np.log(prop_atual / prop_base)
+        componentes_psi = (prop_teste - prop_base) * np.log(prop_teste / prop_base)
         psi_total = np.sum(componentes_psi)
         
         # Criar DataFrame com resultados detalhados
         psi_detalhado = pd.DataFrame({
-            'bucket': range(1, len(pontos_corte)),
+            'decil': range(1, len(pontos_corte)),
             'frequencia_base': freq_base,
-            'frequencia_atual': freq_atual,
+            'frequencia_teste': freq_teste,
             'proporcao_base': prop_base,
-            'proporcao_atual': prop_atual,
-            'componente_psi': componentes_psi
+            'proporcao_teste': prop_teste,
+            'componente_psi': componentes_psi,
+            'limite_inferior': pontos_corte[:-1],
+            'limite_superior': pontos_corte[1:]
         })
         
         return psi_total, psi_detalhado
     
     # Calcular PSI
-    valor_psi, df_psi = calcular_psi(dados_base[coluna_metricas], dados_atual[coluna_metricas])
+    valor_psi, df_psi = calcular_psi(dados_base[coluna_metricas], dados_teste[coluna_metricas])
     
     # ============================================================================
     # ETAPA 3: PLOTAGEM DOS GRÁFICOS
     # ============================================================================
     
     # Criar figura com dois subplots
-    fig = plt.figure(figsize=(14, 10))
+    fig = plt.figure(figsize=(16, 12))
     gs = GridSpec(2, 1, height_ratios=[1, 2])
     
     # --- GRÁFICO SUPERIOR: EVOLUÇÃO DO PSI ---
     ax_superior = plt.subplot(gs[0])
     
     # Plotar linha do PSI acumulado
-    ax_superior.plot(df_psi['bucket'], df_psi['componente_psi'].cumsum(), 
+    ax_superior.plot(df_psi['decil'], df_psi['componente_psi'].cumsum(), 
                      marker='o', linewidth=2, markersize=8, color='blue', 
                      label='PSI Acumulado')
     
@@ -440,44 +480,135 @@ def calcular_psi_temporal(df, coluna_data='data_pedido', coluna_metricas='tempo_
     ax_superior.axhspan(0.1, 0.25, alpha=0.3, color='yellow', label='0.1 < PSI ≤ 0.25 (Atenção)')
     ax_superior.axhspan(0.25, max(valor_psi, 0.5), alpha=0.3, color='red', label='PSI > 0.25 (Instável)')
     
-    ax_superior.set_title(f'Análise de Estabilidade Temporal - {nome_metrica}', 
+    # Formatar título baseado no tipo de análise
+    titulo_temporal = 'Mensal' if tipo_analise == 'mensal' else 'Diária'
+    ax_superior.set_title(f'Análise de Estabilidade {titulo_temporal} - {nome_metrica}', 
                           fontsize=14, fontweight='bold', pad=20)
     ax_superior.set_ylabel('Valor do PSI', fontsize=12)
+    ax_superior.set_xlabel('Decis', fontsize=12)
+    ax_superior.set_xticks(df_psi['decil'])
+    ax_superior.set_xticklabels([f'D{i}' for i in df_psi['decil']])
     ax_superior.legend(loc='upper left', bbox_to_anchor=(1, 1))
     ax_superior.grid(True, alpha=0.3)
     
-    # --- GRÁFICO INFERIOR: DISTRIBUIÇÕES COMPARADAS ---
+    # --- GRÁFICO INFERIOR: BARRAS EMPILHADAS POR SAFRA ---
     ax_inferior = plt.subplot(gs[1])
     
-    # Preparar dados para barras
-    buckets = df_psi['bucket']
-    posicoes_x = np.arange(len(buckets))
-    largura_barra = 0.35
+    # Preparar dados para o gráfico de barras empilhadas
+    num_decis = len(df_psi)
     
-    # Plotar barras das distribuições
-    barras_base = ax_inferior.bar(posicoes_x - largura_barra/2, df_psi['proporcao_base'] * 100, 
-                                  largura_barra, label='Distribuição Base (%)', 
-                                  alpha=0.7, color='blue')
+    # Criar cores com gradiente de azul (mais escuro para decis maiores)
+    cores_decis = plt.cm.Blues(np.linspace(0.3, 0.95, num_decis))
     
-    barras_atual = ax_inferior.bar(posicoes_x + largura_barra/2, df_psi['proporcao_atual'] * 100, 
-                                  largura_barra, label='Distribuição Atual (%)', 
-                                  alpha=0.7, color='orange')
+    # Formatar nomes das safras
+    if tipo_analise == 'diária':
+        nome_safra_base = f"Safra Base\n{data_base_inicio.strftime('%d/%m/%Y')}"
+        nome_safra_teste = f"Safra Teste\n{data_teste_inicio.strftime('%d/%m/%Y')}"
+    else:
+        nome_safra_base = f"Safra Base\n{data_base_inicio.strftime('%b/%Y')}"
+        nome_safra_teste = f"Safra Teste\n{data_teste_inicio.strftime('%b/%Y')}"
     
-    # Adicionar valores nas barras (apenas se altura > 5%)
-    for barra in [barras_base, barras_atual]:
-        for retangulo in barra:
-            altura = retangulo.get_height()
-            if altura > 5:
-                ax_inferior.text(retangulo.get_x() + retangulo.get_width()/2., altura + 0.5,
-                               f'{altura:.1f}%', ha='center', va='bottom', fontsize=9)
+    # Posições das barras no eixo X (safras)
+    safras = ['Base', 'Teste']
+    posicoes_x = np.arange(len(safras))
+    largura_barra = 0.6
     
-    ax_inferior.set_xlabel('Percentis (P10 a P90)', fontsize=12)
+    # Preparar dados empilhados
+    # Cada safra tem 10 decis empilhados que somam 100%
+    proporcoes_base = df_psi['proporcao_base'].values * 100  # Em porcentagem
+    proporcoes_teste = df_psi['proporcao_teste'].values * 100  # Em porcentagem
+    
+    # Criar barras empilhadas
+    acumulado_base = 0
+    acumulado_teste = 0
+    
+    # Plotar cada decil como uma camada empilhada
+    for i in range(num_decis-1, -1, -1):  # Do decil 10 ao 1 (para empilhar corretamente)
+        decil_num = i + 1
+        
+        # Barra da safra base para este decil
+        altura_base = proporcoes_base[i]
+        barra_base = ax_inferior.bar(posicoes_x[0], altura_base, 
+                                    width=largura_barra,
+                                    bottom=acumulado_base,
+                                    color=cores_decis[i],
+                                    edgecolor='white',
+                                    linewidth=0.5,
+                                    alpha=0.9,
+                                    label=f'Decil {decil_num}' if i == num_decis-1 else "")
+        
+        # Barra da safra teste para este decil
+        altura_teste = proporcoes_teste[i]
+        barra_teste = ax_inferior.bar(posicoes_x[1], altura_teste, 
+                                     width=largura_barra,
+                                     bottom=acumulado_teste,
+                                     color=cores_decis[i],
+                                     edgecolor='white',
+                                     linewidth=0.5,
+                                     alpha=0.9,
+                                     hatch='//' if i == num_decis-1 else "//")
+        
+        # Adicionar texto dentro da barra se espaço suficiente
+        if altura_base > 3:
+            ax_inferior.text(posicoes_x[0], acumulado_base + altura_base/2, 
+                           f'D{decil_num}',
+                           ha='center', va='center',
+                           fontsize=8, fontweight='bold',
+                           color='white')
+        
+        if altura_teste > 3:
+            ax_inferior.text(posicoes_x[1], acumulado_teste + altura_teste/2, 
+                           f'D{decil_num}',
+                           ha='center', va='center',
+                           fontsize=8, fontweight='bold',
+                           color='white')
+        
+        acumulado_base += altura_base
+        acumulado_teste += altura_teste
+    
+    # Configurar eixo X
+    ax_inferior.set_xlabel('Safras Analisadas', fontsize=12, fontweight='bold')
     ax_inferior.set_ylabel('Proporção da População (%)', fontsize=12)
-    ax_inferior.set_title('Comparação das Distribuições por Percentil', fontsize=13, fontweight='bold')
+    
+    # Título do gráfico
+    titulo_grafico = f'Distribuição por Decis - Comparação entre Safras'
+    ax_inferior.set_title(titulo_grafico, fontsize=13, fontweight='bold', pad=15)
+    
+    # Configurar ticks do eixo X
     ax_inferior.set_xticks(posicoes_x)
-    ax_inferior.set_xticklabels([f'P{(i+1)*10}' for i in range(len(buckets))])
-    ax_inferior.legend()
-    ax_inferior.grid(True, alpha=0.3)
+    ax_inferior.set_xticklabels([nome_safra_base, nome_safra_teste], 
+                               fontsize=11, fontweight='bold')
+    
+    # Adicionar linha horizontal em 100% para referência
+    ax_inferior.axhline(y=100, color='gray', linestyle='--', alpha=0.5, linewidth=1)
+    
+    # Adicionar valor total no topo de cada barra
+    ax_inferior.text(posicoes_x[0], 102, f'100%',
+                    ha='center', va='bottom', fontsize=10, fontweight='bold', color='black')
+    
+    ax_inferior.text(posicoes_x[1], 102, f'100%',
+                    ha='center', va='bottom', fontsize=10, fontweight='bold', color='black')
+    
+    # Configurar limites do eixo Y
+    ax_inferior.set_ylim(0, 110)
+    
+    # Adicionar grade apenas no eixo Y
+    ax_inferior.grid(True, alpha=0.3, axis='y')
+    
+    # Adicionar legenda dos decis (representativa)
+    from matplotlib.patches import Patch
+    
+    # Criar elementos de legenda para alguns decis representativos
+    legend_elements = [
+        Patch(facecolor=cores_decis[-1], edgecolor='white', label='Decil 10 (Mais alto)'),
+        Patch(facecolor=cores_decis[num_decis//2], edgecolor='white', label=f'Decil {num_decis//2}'),
+        Patch(facecolor=cores_decis[0], edgecolor='white', label='Decil 1 (Mais baixo)'),
+        Patch(facecolor='white', edgecolor='black', hatch='//', alpha=0.9,
+              label='Safra Teste (Hachurado)')
+    ]
+    
+    # ax_inferior.legend(handles=legend_elements, loc='upper left', 
+    #                   bbox_to_anchor=(1, 1), title="Legenda dos Decis")
     
     # ============================================================================
     # ETAPA 4: INFORMAÇÕES E INTERPRETAÇÃO
@@ -494,18 +625,30 @@ def calcular_psi_temporal(df, coluna_data='data_pedido', coluna_metricas='tempo_
         interpretacao = "INSTÁVEL 🚨"
         cor_interpretacao = "red"
     
-    # Texto com estatísticas
+    # Texto com estatísticas detalhadas
     texto_estatisticas = f'''
+    📊 INFORMAÇÕES DAS SAFRAS:
+    
+    SAFRA BASE:
+    • Período: {data_base_inicio.strftime('%d/%m/%Y')} a {data_base_fim.strftime('%d/%m/%Y')}
+    • Registros: {len(dados_base):,}
+    • Média: {dados_base[coluna_metricas].mean():.2f}
+    • Mediana: {dados_base[coluna_metricas].median():.2f}
+    
+    SAFRA TESTE:
+    • Período: {data_teste_inicio.strftime('%d/%m/%Y')} a {data_teste_fim.strftime('%d/%m/%Y')}
+    • Registros: {len(dados_teste):,}
+    • Média: {dados_teste[coluna_metricas].mean():.2f}
+    • Mediana: {dados_teste[coluna_metricas].median():.2f}
+    
     📈 RESULTADO DO PSI:
     • Valor PSI: {valor_psi:.4f}
     • Interpretação: {interpretacao}
-    • Período Base: {len(dados_base):,} registros
-    • Período Atual: {len(dados_atual):,} registros
     • Métrica: {nome_metrica}
     '''
     
     ax_inferior.text(1.02, 0.98, texto_estatisticas, transform=ax_inferior.transAxes, 
-                    fontsize=11, verticalalignment='top', color=cor_interpretacao,
+                    fontsize=9, verticalalignment='top', color=cor_interpretacao,
                     bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.8))
     
     plt.tight_layout()
@@ -514,6 +657,21 @@ def calcular_psi_temporal(df, coluna_data='data_pedido', coluna_metricas='tempo_
     # Print final no console
     print(f"\n🎯 RESULTADO FINAL: PSI = {valor_psi:.4f} - {interpretacao}")
     print("=" * 60)
+    
+    # Adicionar informação detalhada por decil
+    print("\n📋 DETALHAMENTO POR DECIL:")
+    print("=" * 60)
+    print(f"{'Decil':<6} {'% Base':<10} {'% Teste':<10} {'Diferença':<12} {'PSI Comp.':<10}")
+    print("-" * 60)
+    
+    for _, row in df_psi.iterrows():
+        decil = int(row['decil'])
+        perc_base = row['proporcao_base'] * 100
+        perc_teste = row['proporcao_teste'] * 100
+        diferenca = perc_teste - perc_base
+        psi_comp = row['componente_psi']
+        
+        print(f"{f'D{decil}':<6} {perc_base:<10.2f} {perc_teste:<10.2f} {diferenca:<12.2f} {psi_comp:<10.4f}")
     
     return valor_psi, df_psi
 
