@@ -36,6 +36,7 @@ from sklearn.model_selection import train_test_split, KFold, cross_val_score, cr
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.pipeline import Pipeline, make_pipeline
 from sklearn.compose import ColumnTransformer
+from category_encoders import CatBoostEncoder
 
 # Bibliotecas de Modelos de Machine Learning
 import joblib
@@ -46,11 +47,11 @@ from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
 from lightgbm import LGBMRegressor, LGBMClassifier
 from sklearn.cluster import KMeans
+from sklearn.calibration import CalibratedClassifierCV, calibration_curve
 import networkx as nx
 import shap
 
 # Bibliotecas de Métricas de Machine Learning
-from sklearn.calibration import CalibratedClassifierCV, calibration_curve
 from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error, mean_absolute_percentage_error, accuracy_score, roc_auc_score, roc_curve, auc, precision_score, recall_score, precision_recall_curve, average_precision_score, f1_score, log_loss, brier_score_loss, confusion_matrix, silhouette_score
 
 # Bibliotecas de Spark  
