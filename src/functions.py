@@ -332,6 +332,17 @@ def plota_grafico_linhas(df, x, y, nao_calcula_media, title):
         plt.tight_layout()
         plt.show()
 
+def analisa_correlacao(metodo, df):
+    plt.figure(figsize=(30, 15))
+    mask = np.triu(np.ones_like(df.corr(method=metodo), dtype=bool))
+    heatmap = sns.heatmap(df.corr(method=metodo), vmin=-1, vmax=1, cmap='magma', annot=True, fmt='.1f', cbar_kws={"shrink": .8}, mask=mask)
+    heatmap.set_title(f"Analisando Correlação de {metodo}")
+    plt.grid(False)
+    plt.box(False)
+    plt.tight_layout()
+    plt.grid(False)
+    plt.show()
+
 def calcular_psi_temporal(df, coluna_data='data_pedido', coluna_metricas='tempo_entrega', 
                           nome_metrica='Tempo de Entrega', data_base_inicio=None, 
                           data_base_fim=None, data_teste_inicio=None, data_teste_fim=None,
@@ -998,3 +1009,11 @@ def cat_encoder(df, categoricas, target, salvar):
         catboost_encoder = joblib.load("../Modelo_Delivery/models/catboost_encoder.joblib")
 
         return catboost_encoder
+    
+def separa_feature_target(target, dados):
+    x = dados.drop(target, axis = 1)
+    y = dados[[target]]
+
+    return x, y
+
+
