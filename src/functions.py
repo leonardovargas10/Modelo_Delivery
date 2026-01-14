@@ -989,6 +989,11 @@ def visualize_from_series(train_series, valid_series, test_series, oot_series, c
     
     return visualize_all_comparisons(df_train_temp, df_valid_temp, df_test_temp, df_oot_temp, column_name)
 
+def separa_feature_target(target, dados):
+        x = dados.drop(target, axis=1)
+        y = dados[target]
+        return x, y
+
 
 def cat_encoder(df, categoricas, target, salvar):
 
@@ -1015,5 +1020,77 @@ def separa_feature_target(target, dados):
     y = dados[[target]]
 
     return x, y
+
+def aplica_feature_selection_feature_importance(df, target, binarias, categoricas, quantitativas):
+    def remove_features_feature_importance(target, df, threshold):
+        x, y = separa_feature_target(target, df)
+        model = LGBMRegressor(
+            random_state=42,
+            n_estimators=300,
+            max_depth=10,
+            learning_rate=0.05,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            objective="regression"
+        )
+        model.fit(x, y)
+        feature_importances = model.feature_importances_
+        feature_importance_df = (
+            pd.DataFrame({
+                "feature": x.columns,
+                "importance": feature_importances
+            })
+            .query("importance > @threshold")
+            .sort_values("importance", ascending=False)
+        )
+        # Normaliza para %
+        feature_importance_df["importance"] = (feature_importance_df["importance"]/ feature_importance_df["importance"].sum()* 100)
+        return feature_importance_df
+
+    def remove_features_altamente_correlacionadas_quantitativas(df,variaveis_importantes_df,quantitativas,threshold_correlacao=0.9):
+        features_quantitativas_importantes = [f for f in variaveis_importantes_df["feature"]if f in quantitativas]
+
+        if len(features_quantitativas_importantes) <= 1:
+            print("Nenhuma variável quantitativa removida por correlação.")
+            return features_quantitativas_importantes
+
+        df_reduzido = df[features_quantitativas_importantes]
+        correlacoes = df_reduzido.corr(method="spearman").abs()
+
+        features_para_remover = set()
+
+        for i in range(len(correlacoes.columns)):
+            for j in range(i):
+                if correlacoes.iloc[i, j] > threshold_correlacao:
+                    col_i = correlacoes.columns[i]
+                    col_j = correlacoes.columns[j]
+
+                    imp_i = variaveis_importantes_df.loc[variaveis_importantes_df["feature"] == col_i,"importance"].values[0]
+                    imp_j = variaveis_importantes_df.loc[variaveis_importantes_df["feature"] == col_j,"importance"].values[0]
+
+                    # Remove a de menor importância
+                    features_para_remover.add(col_i if imp_i < imp_j else col_j)
+
+        if features_para_remover:
+            print(f"Variáveis removidas por alta correlação (Spearman > {threshold_correlacao}):")
+            for f in sorted(features_para_remover):
+                print(f" - {f}")
+        else:
+            print("Nenhuma variável quantitativa removida por correlação.")
+
+        return [f for f in features_quantitativas_importantes if f not in features_para_remover]
+
+    # 1. Feature importance global (LGBM)
+    feature_importances = remove_features_feature_importance(target, df, threshold=0)
+    # 2. Correlação apenas nas quantitativas
+    quantitativas_filtradas = remove_features_altamente_correlacionadas_quantitativas(df,feature_importances,quantitativas)
+    # 3. Binárias e categóricas passam direto
+    outras_features = [f for f in feature_importances["feature"]if f not in quantitativas]
+    features_finais = set(quantitativas_filtradas + outras_features)
+    feature_importances_final = feature_importances[feature_importances["feature"].isin(features_finais)]
+
+    return feature_importances_final
+
+    
 
 
