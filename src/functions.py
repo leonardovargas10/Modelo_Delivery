@@ -977,3 +977,24 @@ def visualize_from_series(train_series, valid_series, test_series, oot_series, c
     df_oot_temp = pd.DataFrame({column_name: oot_series})
     
     return visualize_all_comparisons(df_train_temp, df_valid_temp, df_test_temp, df_oot_temp, column_name)
+
+
+def cat_encoder(df, categoricas, target, salvar):
+
+    if salvar:
+        catboost_encoder = CatBoostEncoder(
+            cols=categoricas,
+            random_state=42,
+            handle_unknown="value",
+            handle_missing="value"
+        )
+
+        catboost_encoder.fit(df[categoricas],df[target])
+
+        # Salvando o encoder treinado
+        joblib.dump(catboost_encoder,"../Modelo_Delivery/models/catboost_encoder.joblib")
+
+    else:
+        catboost_encoder = joblib.load("../Modelo_Delivery/models/catboost_encoder.joblib")
+
+        return catboost_encoder
