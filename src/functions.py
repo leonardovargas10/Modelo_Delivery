@@ -1219,14 +1219,14 @@ def metricas_regressao(model_name, y_train, y_pred_train, y_test, y_pred_test, e
         y_pred = np.asarray(y_pred, dtype=np.float64).flatten()
         y_true_safe = np.where(y_true == 0, 1e-10, y_true)
         relative_error = (y_true - y_pred) / y_true_safe
-        return np.mean(relative_error > 0.20)  # Fração de subestimações > 20%
+        return np.mean(relative_error > 0.20)
 
     def over20(y_true, y_pred):
         y_true = np.asarray(y_true, dtype=np.float64).flatten()
         y_pred = np.asarray(y_pred, dtype=np.float64).flatten()
         y_true_safe = np.where(y_true == 0, 1e-10, y_true)
         relative_error = (y_pred - y_true) / y_true_safe
-        return np.mean(relative_error > 0.20)  # Fração de superestimações > 20%
+        return np.mean(relative_error > 0.20)
 
     def rmsle(y_true, y_pred):
         y_true = np.maximum(np.asarray(y_true, dtype=np.float64).flatten(), 0)
@@ -1254,8 +1254,8 @@ def metricas_regressao(model_name, y_train, y_pred_train, y_test, y_pred_test, e
     # --------------------------
     # Função para calcular métricas
     # --------------------------
-    def calcular_metricas(y_true, y_pred, etapa):
-        return pd.DataFrame({
+    def calcular_metricas(y_true, y_pred, etapa, pct_amostras=100):
+        data = {
             'MAE': [mean_absolute_error(y_true, y_pred)],
             'RMSE': [np.sqrt(mean_squared_error(y_true, y_pred))],
             'RMSLE': [rmsle(y_true, y_pred)],
@@ -1266,7 +1266,10 @@ def metricas_regressao(model_name, y_train, y_pred_train, y_test, y_pred_test, e
             "CohenKappa": [cohen_kappa_deciles(y_true, y_pred)],
             'Etapa': [etapa],
             'Modelo': [model_name]
-        })
+        }
+        if pct_amostras is not None:
+            data['Pct_amostras (%)'] = [pct_amostras]
+        return pd.DataFrame(data)
 
     # Métricas globais
     metricas_treino = calcular_metricas(y_train, y_pred_train, etapa_1)
@@ -1276,7 +1279,6 @@ def metricas_regressao(model_name, y_train, y_pred_train, y_test, y_pred_test, e
     # Métricas por faixa de tempo (opcional)
     # --------------------------
     if por_faixa:
-        # Define faixas em minutos
         bins = [0, 30, 45, 60, 75, 90, 105, np.inf]
         labels = ['Até 30min','Até 45min','Até 60min','Até 75min','Até 90min','Até 105min','Mais que 105min']
 
@@ -1288,18 +1290,33 @@ def metricas_regressao(model_name, y_train, y_pred_train, y_test, y_pred_test, e
         y_test_arr = np.asarray(y_test).flatten()
         y_pred_test_arr = np.asarray(y_pred_test).flatten()
 
+        total_train = len(y_train_arr)
+        total_test = len(y_test_arr)
+
         # Treino por faixa
         for i in range(len(bins)-1):
             mask = (y_train_arr > bins[i]) & (y_train_arr <= bins[i+1])
             if np.any(mask):
-                df_faixa = calcular_metricas(y_train_arr[mask], y_pred_train_arr[mask], f"{etapa_1} ({labels[i]})")
+                pct = np.sum(mask) / total_train * 100
+                df_faixa = calcular_metricas(
+                    y_train_arr[mask], 
+                    y_pred_train_arr[mask], 
+                    f"{etapa_1} ({labels[i]})",
+                    pct_amostras=pct
+                )
                 metricas_treino_faixa.append(df_faixa)
 
         # Teste por faixa
         for i in range(len(bins)-1):
             mask = (y_test_arr > bins[i]) & (y_test_arr <= bins[i+1])
             if np.any(mask):
-                df_faixa = calcular_metricas(y_test_arr[mask], y_pred_test_arr[mask], f"{etapa_2} ({labels[i]})")
+                pct = np.sum(mask) / total_test * 100
+                df_faixa = calcular_metricas(
+                    y_test_arr[mask], 
+                    y_pred_test_arr[mask], 
+                    f"{etapa_2} ({labels[i]})",
+                    pct_amostras=pct
+                )
                 metricas_teste_faixa.append(df_faixa)
 
         metricas_treino = pd.concat([metricas_treino] + metricas_treino_faixa).reset_index(drop=True)
@@ -1307,17 +1324,22 @@ def metricas_regressao(model_name, y_train, y_pred_train, y_test, y_pred_test, e
 
     return pd.concat([metricas_treino, metricas_teste]).reset_index(drop=True)
 
+
 def metricas_modelos_juntos_regressao(lista_modelos):
     if len(lista_modelos) > 0:
         metricas_modelos = pd.concat(lista_modelos)
     else:
-        return pd.DataFrame()  # retorna DataFrame vazio se não houver modelos
+        return pd.DataFrame()
 
-    # Redefinir o índice para torná-lo exclusivo
+    # Redefinir índice e arredondar
     df = metricas_modelos.reset_index(drop=True)
     df = df.round(2)
 
-    # Função para colorir por etapa e faixa
+    metricas_cols = ['MAE', 'RMSE', 'RMSLE', 'MAPE (%)', 
+                     'Var20 (%)', 'Subestimação (%)', 'Superestimação (%)', 
+                     'CohenKappa', 'Pct_amostras (%)']
+
+    # Função para colorir por etapa
     def color_etapa(val):
         val = str(val).lower()
         color = 'black'
@@ -1327,26 +1349,28 @@ def metricas_modelos_juntos_regressao(lista_modelos):
             color = 'red'
         return f'color: {color}; font-weight: bold;'
 
-    # Função para formatar valores numéricos
-    def format_values(val):
-        if isinstance(val, (int, float)):
-            return f'{val:.2f}'
-        return val
-
-    # Seleção das colunas numéricas para aplicar a formatação
-    metricas_cols = ['MAE', 'RMSE', 'RMSLE', 'MAPE (%)', 'Var20 (%)', 'Subestimação (%)', 'Superestimação (%)', 'CohenKappa']
+    # Função para criar borda inferior quando o modelo muda
+    def separador_modelos(df):
+        estilos = pd.DataFrame('', index=df.index, columns=df.columns)
+        modelos = df['Modelo']
+        for i in range(len(modelos)-1):
+            if modelos[i] != modelos[i+1]:
+                estilos.loc[i, :] = 'border-bottom: 3px solid black;'
+        return estilos
 
     # Estilizando o DataFrame
-    styled_df = df.style\
-        .format(format_values)\
-        .applymap(lambda x: 'color: black; font-weight: bold; background-color: white; font-size: 14px', subset=pd.IndexSlice[:, :])\
-        .applymap(color_etapa, subset=pd.IndexSlice[:, ['Etapa']])\
-        .applymap(lambda x: 'color: black; font-weight: bold; background-color: white; font-size: 14px', subset=pd.IndexSlice[:, metricas_cols])\
+    styled_df = df.style \
+        .format({col: "{:.2f}" for col in metricas_cols}) \
+        .applymap(lambda x: 'color: black; font-weight: bold; background-color: white; font-size: 14px', subset=pd.IndexSlice[:, :]) \
+        .applymap(color_etapa, subset=pd.IndexSlice[:, ['Etapa']]) \
+        .applymap(lambda x: 'color: black; font-weight: bold; background-color: white; font-size: 14px', subset=pd.IndexSlice[:, metricas_cols]) \
+        .apply(separador_modelos, axis=None) \
         .set_table_styles([
             {'selector': 'thead', 'props': [('color', 'black'), ('font-weight', 'bold'), ('background-color', 'lightgray')]}
         ])
-
+    
     return styled_df
+
 
 
 def Regressor(loss_function, x_train, y_train, x_test, y_test):
