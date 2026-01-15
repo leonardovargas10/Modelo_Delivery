@@ -1091,6 +1091,115 @@ def aplica_feature_selection_feature_importance(df, target, binarias, categorica
 
     return feature_importances_final
 
+def aplica_feature_selection_shap(df, target, binarias, categoricas, quantitativas):
+
+    def remove_features_shap(target, df, threshold):
+        x, y = separa_feature_target(target, df)
+
+        model = LGBMRegressor(
+            device='gpu',                         # Usa GPU (se disponível) - substitui tree_method='gpu_hist'
+            verbosity = -1,                       # Nível de verbosidade (-1: silencioso, 0: erros, 1: avisos, 2: informações)                
+            random_state=42,                      # Semente aleatória para reproducibilidade dos resultados
+            boosting_type='gbdt',                 # Tipo de boosting 'gbdt' (Gradient Boosting Decision Tree), 'dart' (Dropouts meet Multiple Additive Regression Trees) ou 'goss' (Gradient-based One-Side Sampling)
+            objective='regression',               # Objetivo 'binary' (Classificação Binária) 'regression' (Regressão)
+            metric='rmse',                        # Métrica de avaliação 'binary_logloss' (Classificação Binária) 'rmse' (Regressão)
+            importance_type='gain',               # Método escolhido para calcular o Feature Importance, podendo ser Gain (ganho médio de informação ao utilizar a Feature), Weight (número de vezes que a Feature foi utilizada) ou Cover (número de amostras impactadas pela Feature)
+            #class_weight={0:1, 1:class_weight},  # Pesos para classes (ou 'balanced')
+            n_estimators=300,                     # Número de árvores no modelo
+            max_depth=10,                         # Profundidade máxima
+            learning_rate=0.05,                   # Taxa de aprendizado
+            max_bin=255,                          # quantidade de bins que as variáveis numéricas serão divididas
+            colsample_bytree=0.5,                 # Fração de features por árvore
+            subsample=0.5,                        # Fração de amostras por árvore
+            reg_alpha=5,                          # Regularização L1
+            reg_lambda=5,                         # Regularização L2
+            min_split_gain=5,                     # Controle de poda da árvore, maior gamma leva a menos crescimento da árvore
+            num_leaves=30,                        # número máximo de folhas por árvore (controle essencial para evitar overfitting no crescimento leaf-wise)
+            min_data_in_leaf=300,                 # quantidade de amostras necessárias para que uma Folha seja válida
+            min_sum_hessian_in_leaf=0.001,        # A soma das Hessianas em uma folha mede o “peso estatístico” daquela folha, portanto, representa o mínimo na soma das Hessianas em uma folha
+            min_child_weight = 0.001,             # A soma das Hessianas em uma folha mede o “peso estatístico” daquela folha, portanto, representa o mínimo na soma das Hessianas em uma folha
+            path_smooth = 10                      # Parâmetro de suavização para evitar grandes variações na predição entre nós pai e filho
+        )
+
+        model.fit(x, y)
+
+        # SHAP (tree-based)
+        explainer = shap.TreeExplainer(model)
+        shap_values = explainer.shap_values(x)
+
+        # Mean Absolute SHAP
+        shap_importance = np.abs(shap_values).mean(axis=0)
+
+        shap_importance_df = (
+            pd.DataFrame({
+                "feature": x.columns,
+                "importance": shap_importance
+            })
+            .query("importance > @threshold")
+            .sort_values("importance", ascending=False)
+        )
+
+        shap_importance_df["importance"] = (shap_importance_df["importance"]/ shap_importance_df["importance"].sum()* 100)
+
+        return {
+            "importance_df": shap_importance_df,
+            "model": model,
+            "X": x,
+            "shap_values": shap_values
+        }
+
+    def remove_features_altamente_correlacionadas_quantitativas(df,variaveis_importantes_df,quantitativas,threshold_correlacao=0.9):
+        features_quantitativas_importantes = [f for f in variaveis_importantes_df["feature"]if f in quantitativas]
+
+        if len(features_quantitativas_importantes) <= 1:
+            print("Nenhuma variável quantitativa removida por correlação.")
+            return features_quantitativas_importantes
+
+        df_reduzido = df[features_quantitativas_importantes]
+        correlacoes = df_reduzido.corr(method="spearman").abs()
+
+        features_para_remover = set()
+
+        for i in range(len(correlacoes.columns)):
+            for j in range(i):
+                if correlacoes.iloc[i, j] > threshold_correlacao:
+                    col_i = correlacoes.columns[i]
+                    col_j = correlacoes.columns[j]
+
+                    imp_i = variaveis_importantes_df.loc[variaveis_importantes_df["feature"] == col_i,"importance"].values[0]
+                    imp_j = variaveis_importantes_df.loc[variaveis_importantes_df["feature"] == col_j,"importance"].values[0]
+
+                    features_para_remover.add(col_i if imp_i < imp_j else col_j)
+
+        return [f for f in features_quantitativas_importantes if f not in features_para_remover]
+
+    # ======================================================
+    # 1. SHAP global
+    # ======================================================
+    shap_output = remove_features_shap(target, df, threshold=0)
+
+    shap_importances = shap_output["importance_df"]
+
+    # ======================================================
+    # 2. Correlação apenas nas quantitativas
+    # ======================================================
+    quantitativas_filtradas = remove_features_altamente_correlacionadas_quantitativas(df,shap_importances,quantitativas)
+
+    # ======================================================
+    # 3. Binárias e categóricas passam direto
+    # ======================================================
+    outras_features = [f for f in shap_importances["feature"]if f not in quantitativas]
+    features_finais = set(quantitativas_filtradas + outras_features)
+    shap_importances_final = shap_importances[shap_importances["feature"].isin(features_finais)]
+
+    return {
+        "feature_importance": shap_importances_final,
+        "model": shap_output["model"],
+        "X": shap_output["X"],
+        "shap_values": shap_output["shap_values"]
+    }
+
+
     
 
 
