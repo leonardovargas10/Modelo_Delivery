@@ -45,6 +45,7 @@ import pickle
 from hyperopt import hp, tpe, fmin, Trials, STATUS_OK
 from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
+import lightgbm as lgb
 from lightgbm import LGBMRegressor, LGBMClassifier
 from sklearn.cluster import KMeans
 from sklearn.calibration import CalibratedClassifierCV, calibration_curve
@@ -52,7 +53,7 @@ import networkx as nx
 import shap
 
 # Bibliotecas de Métricas de Machine Learning
-from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error, mean_absolute_percentage_error, accuracy_score, roc_auc_score, roc_curve, auc, precision_score, recall_score, precision_recall_curve, average_precision_score, f1_score, log_loss, brier_score_loss, confusion_matrix, silhouette_score
+from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error, mean_squared_log_error, mean_absolute_percentage_error, accuracy_score, roc_auc_score, roc_curve, auc, precision_score, recall_score, precision_recall_curve, average_precision_score, f1_score, log_loss, brier_score_loss, confusion_matrix, cohen_kappa_score, silhouette_score
 
 # Bibliotecas de Spark  
 
@@ -1199,6 +1200,251 @@ def aplica_feature_selection_shap(df, target, binarias, categoricas, quantitativ
         "shap_values": shap_output["shap_values"]
     }
 
+
+def metricas_regressao(model_name, y_train, y_pred_train, y_test, y_pred_test, etapa_1='treino', etapa_2='teste', por_faixa=False):
+
+    # --------------------------
+    # Funções auxiliares
+    # --------------------------
+    def var20(y_true, y_pred):
+        y_true = np.asarray(y_true, dtype=np.float64).flatten()
+        y_pred = np.asarray(y_pred, dtype=np.float64).flatten()
+        y_true_safe = np.where(y_true == 0, 1e-10, y_true)
+        relative_error = np.abs(y_pred - y_true) / y_true_safe
+        within_20_percent = relative_error <= 0.20
+        return np.mean(within_20_percent)
+
+    def under20(y_true, y_pred):
+        y_true = np.asarray(y_true, dtype=np.float64).flatten()
+        y_pred = np.asarray(y_pred, dtype=np.float64).flatten()
+        y_true_safe = np.where(y_true == 0, 1e-10, y_true)
+        relative_error = (y_true - y_pred) / y_true_safe
+        return np.mean(relative_error > 0.20)  # Fração de subestimações > 20%
+
+    def over20(y_true, y_pred):
+        y_true = np.asarray(y_true, dtype=np.float64).flatten()
+        y_pred = np.asarray(y_pred, dtype=np.float64).flatten()
+        y_true_safe = np.where(y_true == 0, 1e-10, y_true)
+        relative_error = (y_pred - y_true) / y_true_safe
+        return np.mean(relative_error > 0.20)  # Fração de superestimações > 20%
+
+    def rmsle(y_true, y_pred):
+        y_true = np.maximum(np.asarray(y_true, dtype=np.float64).flatten(), 0)
+        y_pred = np.maximum(np.asarray(y_pred, dtype=np.float64).flatten(), 0)
+        return np.sqrt(mean_squared_log_error(y_true, y_pred))
+
+    def cohen_kappa_deciles(y_true, y_pred, n_deciles=10):
+        y_true = np.asarray(y_true).flatten()
+        y_pred = np.asarray(y_pred).flatten()
+        if len(np.unique(y_true)) < n_deciles:
+            n_deciles = len(np.unique(y_true))
+        if n_deciles < 2:
+            return 0.0
+        bins = np.percentile(y_true, np.linspace(0, 100, n_deciles+1))
+        y_true_cat = np.digitize(y_true, bins, right=True) - 1
+        y_pred_cat = np.digitize(y_pred, bins, right=True) - 1
+        return cohen_kappa_score(y_true_cat, y_pred_cat)
+
+    def calcular_mape(y_true, y_pred):
+        y_true = np.asarray(y_true, dtype=np.float64).flatten()
+        y_pred = np.asarray(y_pred, dtype=np.float64).flatten()
+        y_true_safe = np.where(y_true == 0, 1e-10, y_true)
+        return np.mean(np.abs(y_pred - y_true) / y_true_safe) * 100
+
+    # --------------------------
+    # Função para calcular métricas
+    # --------------------------
+    def calcular_metricas(y_true, y_pred, etapa):
+        return pd.DataFrame({
+            'MAE': [mean_absolute_error(y_true, y_pred)],
+            'RMSE': [np.sqrt(mean_squared_error(y_true, y_pred))],
+            'RMSLE': [rmsle(y_true, y_pred)],
+            'MAPE (%)': [calcular_mape(y_true, y_pred)],
+            'Var20 (%)': [var20(y_true, y_pred) * 100],
+            'Subestimação (%)': [under20(y_true, y_pred) * 100],
+            'Superestimação (%)': [over20(y_true, y_pred) * 100],
+            "CohenKappa": [cohen_kappa_deciles(y_true, y_pred)],
+            'Etapa': [etapa],
+            'Modelo': [model_name]
+        })
+
+    # Métricas globais
+    metricas_treino = calcular_metricas(y_train, y_pred_train, etapa_1)
+    metricas_teste = calcular_metricas(y_test, y_pred_test, etapa_2)
+
+    # --------------------------
+    # Métricas por faixa de tempo (opcional)
+    # --------------------------
+    if por_faixa:
+        # Define faixas em minutos
+        bins = [0, 30, 45, 60, 75, 90, 105, np.inf]
+        labels = ['Até 30min','Até 45min','Até 60min','Até 75min','Até 90min','Até 105min','Mais que 105min']
+
+        metricas_treino_faixa = []
+        metricas_teste_faixa = []
+
+        y_train_arr = np.asarray(y_train).flatten()
+        y_pred_train_arr = np.asarray(y_pred_train).flatten()
+        y_test_arr = np.asarray(y_test).flatten()
+        y_pred_test_arr = np.asarray(y_pred_test).flatten()
+
+        # Treino por faixa
+        for i in range(len(bins)-1):
+            mask = (y_train_arr > bins[i]) & (y_train_arr <= bins[i+1])
+            if np.any(mask):
+                df_faixa = calcular_metricas(y_train_arr[mask], y_pred_train_arr[mask], f"{etapa_1} ({labels[i]})")
+                metricas_treino_faixa.append(df_faixa)
+
+        # Teste por faixa
+        for i in range(len(bins)-1):
+            mask = (y_test_arr > bins[i]) & (y_test_arr <= bins[i+1])
+            if np.any(mask):
+                df_faixa = calcular_metricas(y_test_arr[mask], y_pred_test_arr[mask], f"{etapa_2} ({labels[i]})")
+                metricas_teste_faixa.append(df_faixa)
+
+        metricas_treino = pd.concat([metricas_treino] + metricas_treino_faixa).reset_index(drop=True)
+        metricas_teste = pd.concat([metricas_teste] + metricas_teste_faixa).reset_index(drop=True)
+
+    return pd.concat([metricas_treino, metricas_teste]).reset_index(drop=True)
+
+def metricas_modelos_juntos_regressao(lista_modelos):
+    if len(lista_modelos) > 0:
+        metricas_modelos = pd.concat(lista_modelos)
+    else:
+        return pd.DataFrame()  # retorna DataFrame vazio se não houver modelos
+
+    # Redefinir o índice para torná-lo exclusivo
+    df = metricas_modelos.reset_index(drop=True)
+    df = df.round(2)
+
+    # Função para colorir por etapa e faixa
+    def color_etapa(val):
+        val = str(val).lower()
+        color = 'black'
+        if 'treino' in val:
+            color = 'blue'
+        elif 'teste' in val or 'validacao' in val:
+            color = 'red'
+        return f'color: {color}; font-weight: bold;'
+
+    # Função para formatar valores numéricos
+    def format_values(val):
+        if isinstance(val, (int, float)):
+            return f'{val:.2f}'
+        return val
+
+    # Seleção das colunas numéricas para aplicar a formatação
+    metricas_cols = ['MAE', 'RMSE', 'RMSLE', 'MAPE (%)', 'Var20 (%)', 'Subestimação (%)', 'Superestimação (%)', 'CohenKappa']
+
+    # Estilizando o DataFrame
+    styled_df = df.style\
+        .format(format_values)\
+        .applymap(lambda x: 'color: black; font-weight: bold; background-color: white; font-size: 14px', subset=pd.IndexSlice[:, :])\
+        .applymap(color_etapa, subset=pd.IndexSlice[:, ['Etapa']])\
+        .applymap(lambda x: 'color: black; font-weight: bold; background-color: white; font-size: 14px', subset=pd.IndexSlice[:, metricas_cols])\
+        .set_table_styles([
+            {'selector': 'thead', 'props': [('color', 'black'), ('font-weight', 'bold'), ('background-color', 'lightgray')]}
+        ])
+
+    return styled_df
+
+
+def Regressor(loss_function, x_train, y_train, x_test, y_test):
+    
+    cols = list(x_train.columns)
+    x_train = x_train[cols]
+    x_test = x_test[cols]
+
+    base_params = dict(
+        device='gpu',                         # Usa GPU (se disponível) - substitui tree_method='gpu_hist'
+        verbosity = -1,                       # Nível de verbosidade (-1: silencioso, 0: erros, 1: avisos, 2: informações)                
+        random_state=42,                      # Semente aleatória para reproducibilidade dos resultados
+        boosting_type='gbdt',                 # Tipo de boosting 'gbdt' (Gradient Boosting Decision Tree), 'dart' (Dropouts meet Multiple Additive Regression Trees) ou 'goss' (Gradient-based One-Side Sampling)
+        #objective='regression',               # Função de custo 'binary' (Classificação Binária) 'regression' (Regressão)
+        #metric='mae',                         # Métrica de avaliação durante as Logs de Treinamento
+        importance_type='gain',               # Método escolhido para calcular o Feature Importance, podendo ser Gain (ganho médio de informação ao utilizar a Feature), Weight (número de vezes que a Feature foi utilizada) ou Cover (número de amostras impactadas pela Feature)
+        n_estimators=300,                     # Número de árvores no modelo
+        max_depth=7,                         # Profundidade máxima
+        learning_rate=0.05,                   # Taxa de aprendizado
+        max_bin=255,                          # quantidade de bins que as variáveis numéricas serão divididas
+        # colsample_bytree=0.5,                 # Fração de features por árvore
+        # subsample=0.5,                        # Fração de amostras por árvore
+        # reg_alpha=5,                          # Regularização L1
+        # reg_lambda=5,                         # Regularização L2
+        # min_split_gain=5,                     # Controle de poda da árvore, maior gamma leva a menos crescimento da árvore
+        # num_leaves=30,                        # número máximo de folhas por árvore (controle essencial para evitar overfitting no crescimento leaf-wise)
+        # min_data_in_leaf=300,                 # quantidade de amostras necessárias para que uma Folha seja válida
+        # min_sum_hessian_in_leaf=0.001,        # A soma das Hessianas em uma folha mede o “peso estatístico” daquela folha, portanto, representa o mínimo na soma das Hessianas em uma folha
+        # min_child_weight = 0.001,             # A soma das Hessianas em uma folha mede o “peso estatístico” daquela folha, portanto, representa o mínimo na soma das Hessianas em uma folha
+        # path_smooth = 10                      # Parâmetro de suavização para evitar grandes variações na predição entre nós pai e filho
+        #class_weight={0:1, 1:class_weight},   # Pesos para classes (ou 'balanced')
+    )
+
+    models = {
+        "MAE": LGBMRegressor(
+            objective="regression_l1",
+            metric="l1",
+            **base_params
+        ),
+
+        "RMSE": LGBMRegressor(
+            objective="regression",
+            metric="l2",
+            **base_params
+        ),
+
+        "Huber": LGBMRegressor(
+            objective="huber",
+            metric="l1",
+            huber_delta=1.0,
+            **base_params
+        ),
+
+        "RMSLE": LGBMRegressor(
+            objective="regression",
+            metric="l2",
+            **base_params
+        ),
+
+        "Gamma": LGBMRegressor(
+            objective="gamma",
+            metric="gamma",
+            **base_params
+        )
+    }
+
+    if loss_function not in models:
+        raise ValueError(f"Loss function '{loss_function}' não suportada.")
+
+    model = models[loss_function]
+    
+    # Tratamento especial para RMSLE: aplicar log1p no target e depois expm1 nas predições
+    if loss_function == "RMSLE":
+        # Aplicar log1p no target (ln(1+y))
+        y_train_transformed = np.log1p(y_train)
+        
+        # Treinar o modelo no target transformado
+        model.fit(x_train, y_train_transformed)
+        
+        # Fazer predições no espaço transformado
+        y_pred_train_transformed = model.predict(x_train)
+        y_pred_test_transformed = model.predict(x_test)
+        
+        # Aplicar expm1 para voltar ao espaço original (e^pred - 1)
+        y_pred_train = np.expm1(y_pred_train_transformed)
+        y_pred_test = np.expm1(y_pred_test_transformed)
+        
+        # IMPORTANTE: ajustar para garantir valores não-negativos
+        y_pred_train = np.maximum(y_pred_train, 0)
+        y_pred_test = np.maximum(y_pred_test, 0)
+        
+    else:
+        # Para outras funções de perda, treinar normalmente
+        model.fit(x_train, y_train)
+        y_pred_train = model.predict(x_train)
+        y_pred_test = model.predict(x_test)
+
+    return model, y_pred_train, y_pred_test
 
     
 
