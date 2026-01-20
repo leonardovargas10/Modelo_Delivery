@@ -49,6 +49,12 @@ import lightgbm as lgb
 from lightgbm import LGBMRegressor, LGBMClassifier, early_stopping
 from sklearn.cluster import KMeans
 from sklearn.calibration import CalibratedClassifierCV, calibration_curve
+import skpro 
+import mapie
+from skpro.regression.residual import ResidualDouble
+from mapie.metrics.regression import regression_coverage_score
+from mapie.regression import SplitConformalRegressor
+from mapie.utils import train_conformalize_test_split
 import networkx as nx
 import shap
 
