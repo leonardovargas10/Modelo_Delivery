@@ -46,7 +46,7 @@ from hyperopt import hp, tpe, fmin, Trials, STATUS_OK
 from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
 import lightgbm as lgb
-from lightgbm import LGBMRegressor, LGBMClassifier
+from lightgbm import LGBMRegressor, LGBMClassifier, early_stopping
 from sklearn.cluster import KMeans
 from sklearn.calibration import CalibratedClassifierCV, calibration_curve
 import networkx as nx
@@ -996,7 +996,7 @@ def separa_feature_target(target, dados):
         return x, y
 
 
-def cat_encoder(df, categoricas, target, salvar):
+def cat_encoder(df = None, categoricas = None, target = None, salvar=False):
 
     if salvar:
         catboost_encoder = CatBoostEncoder(
@@ -1015,6 +1015,18 @@ def cat_encoder(df, categoricas, target, salvar):
         catboost_encoder = joblib.load("../Modelo_Delivery/models/catboost_encoder.joblib")
 
         return catboost_encoder
+    
+def carrega_salva_modelo(opcao, modelo = None):
+    # Treina e Salva o Modelo
+    if opcao == 'salvar':
+        joblib.dump(modelo, "../Modelo_Delivery/models/lgbm_hyperopt.joblib")
+
+        return print('Modelo de risk_transaction Treinado e Salvo com Sucesso!')
+
+    else:
+        # Carrega o Classificador e Escora para as bases de Treino, Validação, Teste e OOT
+        lgbm_hyperopt = joblib.load("../Modelo_Delivery/models/lgbm_hyperopt.joblib")
+        return lgbm_hyperopt
     
 def separa_feature_target(target, dados):
     x = dados.drop(target, axis = 1)
@@ -1371,6 +1383,48 @@ def metricas_modelos_juntos_regressao(lista_modelos):
     
     return styled_df
 
+def metricas_regressao_diarias(df,coluna_data,y_true_col,y_pred_col):
+    # --------------------------
+    # Funções auxiliares
+    # --------------------------
+    def var20(y_true, y_pred):
+        y_true = np.asarray(y_true, dtype=np.float64)
+        y_pred = np.asarray(y_pred, dtype=np.float64)
+        y_true_safe = np.where(y_true == 0, 1e-10, y_true)
+        return np.mean(np.abs(y_pred - y_true) / y_true_safe <= 0.20) * 100
+
+    def rmsle(y_true, y_pred):
+        y_true = np.maximum(np.asarray(y_true), 0)
+        y_pred = np.maximum(np.asarray(y_pred), 0)
+        return np.sqrt(mean_squared_log_error(y_true, y_pred)) * 100
+
+    # --------------------------
+    # Preparação
+    # --------------------------
+    df = df.copy()
+    df[coluna_data] = pd.to_datetime(df[coluna_data])
+    df = df.sort_values(coluna_data)
+
+    resultados = []
+
+    # --------------------------
+    # Loop diário
+    # --------------------------
+    for data, grupo in df.groupby(df[coluna_data].dt.date):
+
+        y_true = grupo[y_true_col].values
+        y_pred = grupo[y_pred_col].values
+
+        resultados.append({
+            "data_pedido": pd.to_datetime(data),
+            "MAE": mean_absolute_error(y_true, y_pred),
+            "RMSE": np.sqrt(mean_squared_error(y_true, y_pred)),
+            "RMSLE": rmsle(y_true, y_pred),
+            "Var20 (%)": var20(y_true, y_pred),
+            "Qtd_registros": len(grupo)
+        })
+
+    return pd.DataFrame(resultados)
 
 
 def Regressor(loss_function, x_train, y_train, x_test, y_test):
@@ -1471,5 +1525,106 @@ def Regressor(loss_function, x_train, y_train, x_test, y_test):
     return model, y_pred_train, y_pred_test
 
     
+def otimizacao_hyperopt_regression(x_train, y_train, x_test, y_test, max_evals):
+
+    # Espaço de busca dos hiperparâmetros
+    search_space = {
+        'n_estimators': hp.choice('n_estimators', [700, 800, 900, 1000]),
+        'max_depth': hp.choice('max_depth', [10, 11, 12]),
+        'learning_rate': hp.uniform('learning_rate', 0.05, 0.1),
+        'max_bin': hp.choice('max_bin', [64, 128, 255]),
+        'reg_alpha': hp.uniform('reg_alpha', 0, 1),
+        'reg_lambda': hp.uniform('reg_lambda', 0, 1),
+        'min_split_gain': hp.uniform('min_split_gain', 0, 10),
+        'colsample_bytree': hp.uniform('colsample_bytree', 0.5, 1),
+        'subsample': hp.uniform('subsample', 0.5, 1),
+        'num_leaves': hp.choice('num_leaves', [30, 35, 40, 45, 50]),
+        'min_data_in_leaf': hp.choice('min_data_in_leaf', [300, 400, 500]),
+        'min_sum_hessian_in_leaf': hp.uniform('min_sum_hessian_in_leaf', 0.001, 0.005),
+        #'path_smooth': hp.uniform('path_smooth', 0, 20)
+    }
+
+
+    # Função de custo do Hyperopt
+    def objective(params):
+        # Split interno para validação
+        X_tr, X_val, y_tr, y_val = train_test_split(
+            x_train, y_train, test_size=0.2, random_state=42
+        )
+
+        model = LGBMRegressor(
+            device='gpu',                         # Usa GPU (se disponível) - substitui tree_method='gpu_hist'
+            verbosity = -1,                       # Nível de verbosidade (-1: silencioso, 0: erros, 1: avisos, 2: informações)                
+            random_state=42,                      # Semente aleatória para reproducibilidade dos resultados
+            boosting_type='gbdt',                 # Tipo de boosting 'gbdt' (Gradient Boosting Decision Tree), 'dart' (Dropouts meet Multiple Additive Regression Trees) ou 'goss' (Gradient-based One-Side Sampling)
+            importance_type='gain',               # Método escolhido para calcular o Feature Importance, podendo ser Gain (ganho médio de informação ao utilizar a Feature), Weight (número de vezes que a Feature foi utilizada) ou Cover (número de amostras impactadas pela Feature)
+            objective='gamma',  # Função de Custo
+            metric='rmse',  # usado apenas para log/monitoramento
+            **params
+        )
+
+        model.fit(
+            X_tr, y_tr,
+            eval_set=[(X_val, y_val)],
+            eval_metric="rmse",
+            callbacks=[early_stopping(stopping_rounds=20, verbose=False)]
+        )
+
+
+        # Previsões na validação
+        preds = model.predict(X_val)
+        preds = np.maximum(preds, 1e-6)
+
+        # RMSLE real
+        score = np.sqrt(mean_squared_log_error(y_val, preds))
+
+        return {'loss': score, 'status': STATUS_OK}
+
+    # Rodando a otimização
+    trials = Trials()
+    best = fmin(
+        fn=objective,
+        space=search_space,
+        algo=tpe.suggest,
+        max_evals=max_evals,
+        trials=trials,
+        rstate=np.random.default_rng(42)
+    )
+
+    # Reconstruir hiperparâmetros escolhidos
+    best['n_estimators'] = [700, 800, 900, 1000][best['n_estimators']]
+    best['max_depth'] = [10, 11, 12][best['max_depth']]
+    best['max_bin'] = [64, 128, 255][best['max_bin']]
+    best['num_leaves'] = [30, 35, 40, 45, 50][best['num_leaves']]
+    best['min_data_in_leaf'] = [300, 400, 500][best['min_data_in_leaf']]
+
+
+    # Treinar modelo final com os melhores hiperparâmetros
+    final_model = LGBMRegressor(
+        device='gpu',                         # Usa GPU (se disponível) - substitui tree_method='gpu_hist'
+        verbosity = -1,                       # Nível de verbosidade (-1: silencioso, 0: erros, 1: avisos, 2: informações)                
+        random_state=42,                      # Semente aleatória para reproducibilidade dos resultados
+        boosting_type='gbdt',                 # Tipo de boosting 'gbdt' (Gradient Boosting Decision Tree), 'dart' (Dropouts meet Multiple Additive Regression Trees) ou 'goss' (Gradient-based One-Side Sampling)
+        importance_type='gain',               # Método escolhido para calcular o Feature Importance, podendo ser Gain (ganho médio de informação ao utilizar a Feature), Weight (número de vezes que a Feature foi utilizada) ou Cover (número de amostras impactadas pela Feature)
+        objective='gamma',  # Função de Custo
+        metric='rmse',  # usado apenas para log/monitoramento
+        **best
+    )
+
+    final_model.fit(
+        x_train, y_train,
+        eval_set=[(x_test, y_test)],
+        eval_metric='rmse',
+        callbacks=[early_stopping(stopping_rounds=20, verbose=False)]
+    )
+
+    # Previsões finais
+    y_pred_train = final_model.predict(x_train)
+    y_pred_test = final_model.predict(x_test)
+
+    # Organiza melhores hiperparâmetros em DataFrame
+    hiperparametros = pd.DataFrame([best])
+
+    return final_model, y_pred_train, y_pred_test, hiperparametros, trials
 
 
