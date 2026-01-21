@@ -14,6 +14,8 @@ from tabulate import tabulate
 from matplotlib.lines import Line2D
 from matplotlib.ticker import FuncFormatter
 from matplotlib.gridspec import GridSpec
+from matplotlib.patches import Polygon
+from matplotlib.collections import PatchCollection
 
 # Bibliotecas de Manipulação de Tempo
 from datetime import datetime, date, timedelta
@@ -25,7 +27,7 @@ import scipy.stats as stats
 import statsmodels
 import statsmodels.api as sm
 import statsmodels.formula.api as smf
-from scipy.stats import normaltest, ttest_ind, ttest_rel, mannwhitneyu, wilcoxon, kruskal, uniform, chi2_contingency
+from scipy.stats import norm, normaltest, ttest_ind, ttest_rel, mannwhitneyu, wilcoxon, kruskal, uniform, chi2_contingency
 from statsmodels.stats.weightstats import ztest
 from numpy import interp
 import random
@@ -52,6 +54,7 @@ from sklearn.calibration import CalibratedClassifierCV, calibration_curve
 import skpro 
 import mapie
 from skpro.regression.residual import ResidualDouble
+from skpro.distributions import Normal, Gamma, LogNormal
 from mapie.metrics.regression import regression_coverage_score
 from mapie.regression import SplitConformalRegressor
 from mapie.utils import train_conformalize_test_split
@@ -996,6 +999,175 @@ def visualize_from_series(train_series, valid_series, test_series, oot_series, c
     
     return visualize_all_comparisons(df_train_temp, df_valid_temp, df_test_temp, df_oot_temp, column_name)
 
+def plot_kde_comparativo(df_train, df_valid, df_test, df_oot, 
+                         figsize=(16, 10), colors=None, alpha=0.7):
+    """
+    Plota gráficos de KDE comparativos para IC inferior, predição e IC superior
+    """
+    
+    if colors is None:
+        colors = ['#1f77b4', '#2ca02c', '#d62728']  # Azul, Verde, Vermelho
+    
+    # Configurar subplots
+    fig, axes = plt.subplots(2, 2, figsize=figsize)
+    axes = axes.flatten()
+    
+    datasets = [
+        ("Treino", df_train),
+        ("Validação", df_valid),
+        ("Teste", df_test),
+        ("Out-of-Time", df_oot)
+    ]
+    
+    for idx, (nome, df) in enumerate(datasets):
+        ax = axes[idx]
+        
+        # Verificar se as colunas existem
+        cols_necessarias = ['ic_inferior', 'y_predict', 'ic_superior']
+        for col in cols_necessarias:
+            if col not in df.columns:
+                raise ValueError(f"Coluna '{col}' não encontrada no dataset {nome}")
+        
+        # Plotar KDEs
+        sns.kdeplot(data=df['ic_inferior'], ax=ax, color=colors[0], 
+                   label='IC Inferior', linewidth=2, fill=True, alpha=alpha*0.5)
+        sns.kdeplot(data=df['y_predict'], ax=ax, color=colors[1], 
+                   label='Predição', linewidth=2, fill=True, alpha=alpha*0.5)
+        sns.kdeplot(data=df['ic_superior'], ax=ax, color=colors[2], 
+                   label='IC Superior', linewidth=2, fill=True, alpha=alpha*0.5)
+        
+        # Configurações do gráfico
+        ax.set_title(f'{nome}\nDistribuição dos Intervalos', fontsize=14, fontweight='bold')
+        ax.set_xlabel('Valor', fontsize=11)
+        ax.set_ylabel('Densidade', fontsize=11)
+        ax.legend(loc='upper right')
+        ax.grid(True, alpha=0.3)
+        
+        # Adicionar estatísticas
+        mean_inf = df['ic_inferior'].mean()
+        mean_pred = df['y_predict'].mean()
+        mean_sup = df['ic_superior'].mean()
+        
+        stats_text = f'Médias:\nInf: {mean_inf:.1f}\nPred: {mean_pred:.1f}\nSup: {mean_sup:.1f}'
+        ax.text(0.02, 0.98, stats_text, transform=ax.transAxes, 
+               fontsize=9, verticalalignment='top',
+               bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+    
+    plt.suptitle('Comparação de Distribuições: IC Inferior vs Predição vs IC Superior', 
+                fontsize=16, fontweight='bold', y=1.02)
+    plt.tight_layout()
+    return fig
+
+def plot_kde_overlay(df_train, df_valid, df_test, df_oot, 
+                     figsize=(15, 8), palette='viridis'):
+    """
+    Plota KDEs sobrepostos para comparação entre datasets
+    """
+    
+    # Preparar dados combinados
+    df_train['dataset'] = 'Treino'
+    df_valid['dataset'] = 'Validação'
+    df_test['dataset'] = 'Teste'
+    df_oot['dataset'] = 'Out-of-Time'
+    
+    combined = pd.concat([df_train, df_valid, df_test, df_oot])
+    
+    # Criar figura com subplots
+    fig, axes = plt.subplots(1, 3, figsize=figsize)
+    
+    # Plotar para cada métrica
+    metrics = ['ic_inferior', 'y_predict', 'ic_superior']
+    metric_names = ['IC Inferior', 'Predição', 'IC Superior']
+    
+    for idx, (metric, name) in enumerate(zip(metrics, metric_names)):
+        ax = axes[idx]
+        
+        for dataset in combined['dataset'].unique():
+            subset = combined[combined['dataset'] == dataset]
+            sns.kdeplot(data=subset[metric], ax=ax, 
+                       label=dataset, linewidth=2)
+        
+        ax.set_title(f'Distribuição do {name}', fontsize=13, fontweight='bold')
+        ax.set_xlabel(name, fontsize=11)
+        ax.set_ylabel('Densidade', fontsize=11)
+        ax.legend(loc='upper right')
+        ax.grid(True, alpha=0.3)
+    
+    plt.suptitle('Comparação entre Datasets - Distribuições das Métricas', 
+                fontsize=16, fontweight='bold', y=1.05)
+    plt.tight_layout()
+    return fig
+
+def plot_series_temporais_com_ic(df_train, df_valid, df_test, df_oot, window_size=7, figsize=(18, 12)):
+    """
+    Plota séries temporais com médias móveis e intervalos de confiança
+    """
+    
+    fig, axes = plt.subplots(4, 1, figsize=figsize, sharex=False)
+    
+    datasets = [
+        ("Treino", df_train, axes[0]),
+        ("Validação", df_valid, axes[1]),
+        ("Teste", df_test, axes[2]),
+        ("Out-of-Time", df_oot, axes[3])
+    ]
+    
+    for nome, df, ax in datasets:
+        # Ordenar por data
+        if 'data_pedido' in df.columns:
+            df = df.sort_values('data_pedido')
+        
+        # Calcular médias móveis
+        df_agg = df.copy()
+        df_agg['mean_inf'] = df_agg['ic_inferior'].rolling(window=window_size).mean()
+        df_agg['mean_pred'] = df_agg['y_predict'].rolling(window=window_size).mean()
+        df_agg['mean_sup'] = df_agg['ic_superior'].rolling(window=window_size).mean()
+        
+        # Calcular desvio padrão para sombreamento
+        df_agg['std_inf'] = df_agg['ic_inferior'].rolling(window=window_size).std()
+        df_agg['std_pred'] = df_agg['y_predict'].rolling(window=window_size).std()
+        df_agg['std_sup'] = df_agg['ic_superior'].rolling(window=window_size).std()
+        
+        # Índice para plotagem
+        x = range(len(df_agg)) if 'data_pedido' not in df.columns else df_agg['data_pedido']
+        
+        # Plotar médias móveis
+        ax.plot(x, df_agg['mean_inf'], color='blue', linewidth=2, label='Média IC Inferior')
+        ax.plot(x, df_agg['mean_pred'], color='green', linewidth=2.5, label='Média Predição')
+        ax.plot(x, df_agg['mean_sup'], color='red', linewidth=2, label='Média IC Superior')
+        
+        # Adicionar sombreamento para intervalo de confiança
+        ax.fill_between(x, 
+                       df_agg['mean_inf'] - df_agg['std_inf'],
+                       df_agg['mean_inf'] + df_agg['std_inf'],
+                       color='blue', alpha=0.2, label='±1σ IC Inf')
+        
+        ax.fill_between(x, 
+                       df_agg['mean_pred'] - df_agg['std_pred'],
+                       df_agg['mean_pred'] + df_agg['std_pred'],
+                       color='green', alpha=0.2, label='±1σ Pred')
+        
+        ax.fill_between(x, 
+                       df_agg['mean_sup'] - df_agg['std_sup'],
+                       df_agg['mean_sup'] + df_agg['std_sup'],
+                       color='red', alpha=0.2, label='±1σ IC Sup')
+        
+        # Configurações
+        ax.set_title(f'{nome} - Séries Temporais com IC', fontsize=13, fontweight='bold')
+        ax.set_xlabel('Data' if 'data_pedido' in df.columns else 'Índice', fontsize=11)
+        ax.set_ylabel('Valor', fontsize=11)
+        ax.legend(loc='upper left', fontsize=9)
+        ax.grid(True, alpha=0.3)
+        
+        # Rotacionar labels de data se necessário
+        if 'data_pedido' in df.columns:
+            plt.setp(ax.xaxis.get_majorticklabels(), rotation=45)
+    
+    plt.suptitle('Evolução Temporal das Médias Móveis com Intervalos de Confiança', 
+                fontsize=16, fontweight='bold', y=1.02)
+    plt.tight_layout()
+    return fig
+
 def separa_feature_target(target, dados):
         x = dados.drop(target, axis=1)
         y = dados[target]
@@ -1027,12 +1199,20 @@ def carrega_salva_modelo(opcao, modelo = None):
     if opcao == 'salvar':
         joblib.dump(modelo, "../Modelo_Delivery/models/lgbm_hyperopt.joblib")
 
-        return print('Modelo de risk_transaction Treinado e Salvo com Sucesso!')
-
     else:
         # Carrega o Classificador e Escora para as bases de Treino, Validação, Teste e OOT
         lgbm_hyperopt = joblib.load("../Modelo_Delivery/models/lgbm_hyperopt.joblib")
         return lgbm_hyperopt
+    
+def carrega_salva_ic(opcao, modelo = None):
+    # Treina e Salva o Modelo
+    if opcao == 'salvar':
+        joblib.dump(modelo, "../Modelo_Delivery/models/skpro_residual_double.joblib")
+
+    else:
+        # Carrega o Classificador e Escora para as bases de Treino, Validação, Teste e OOT
+        skpro_residual_double = joblib.load("../Modelo_Delivery/models/skpro_residual_double.joblib")
+        return skpro_residual_double
     
 def separa_feature_target(target, dados):
     x = dados.drop(target, axis = 1)
@@ -1537,7 +1717,7 @@ def otimizacao_hyperopt_regression(x_train, y_train, x_test, y_test, max_evals):
     search_space = {
         'n_estimators': hp.choice('n_estimators', [700, 800, 900, 1000]),
         'max_depth': hp.choice('max_depth', [10, 11, 12]),
-        'learning_rate': hp.uniform('learning_rate', 0.05, 0.1),
+        'learning_rate': hp.uniform('learning_rate', 0.01, 0.05),
         'max_bin': hp.choice('max_bin', [64, 128, 255]),
         'reg_alpha': hp.uniform('reg_alpha', 0, 1),
         'reg_lambda': hp.uniform('reg_lambda', 0, 1),
@@ -1632,5 +1812,171 @@ def otimizacao_hyperopt_regression(x_train, y_train, x_test, y_test, max_evals):
     hiperparametros = pd.DataFrame([best])
 
     return final_model, y_pred_train, y_pred_test, hiperparametros, trials
+
+
+def skpro_artesanal(target, x_train, y_train,x_valid, y_valid, x_test, y_test, x_oot, y_oot,modelo_otimizado, alpha = 0.1):
+    # ===============================
+    # MODELO DA MÉDIA
+    # ===============================
+    y_pred_train = modelo_otimizado.predict(x_train)
+
+    y_train_array = y_train[target].values.ravel()
+    erro_abs_train = np.abs(y_train_array - y_pred_train)
+
+    # ===============================
+    # MODELO DA INCERTEZA
+    # ===============================
+    modelo_sigma = LGBMRegressor(
+        n_estimators=300,
+        learning_rate=0.05,
+        max_depth=6,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        random_state=42
+    )
+
+    modelo_sigma.fit(x_train, erro_abs_train)
+
+    # ===============================
+    # FUNÇÃO DE PREDIÇÃO
+    # ===============================
+    def predict_interval(X):
+        mu = modelo_otimizado.predict(X)
+        sigma = modelo_sigma.predict(X)
+        sigma = np.clip(sigma, 1e-6, None)
+
+        z = norm.ppf(1 - alpha / 2)
+
+        lower = mu - z * sigma
+        upper = mu + z * sigma
+
+        return mu, lower, upper
+
+    # ===============================
+    # PREDIÇÕES (VETORES)
+    # ===============================
+    mu_train, lower_train, upper_train = predict_interval(x_train)
+    mu_valid, lower_valid, upper_valid = predict_interval(x_valid)
+    mu_test,  lower_test,  upper_test  = predict_interval(x_test)
+    mu_oot,   lower_oot,   upper_oot   = predict_interval(x_oot)
+
+    # ===============================
+    # COBERTURA
+    # ===============================
+    def coverage(y_true, lower, upper):
+        return np.mean((y_true >= lower) & (y_true <= upper))
+
+    cov_train = coverage(y_train[target].values.ravel(), lower_train, upper_train)
+    cov_valid = coverage(y_valid[target].values.ravel(), lower_valid, upper_valid)
+    cov_test  = coverage(y_test[target].values.ravel(),  lower_test,  upper_test)
+    cov_oot   = coverage(y_oot[target].values.ravel(),   lower_oot,   upper_oot)
+
+    print(f"Coverage Treino: {cov_train:.3f}")
+    print(f"Coverage Validação: {cov_valid:.3f}")
+    print(f"Coverage Teste: {cov_test:.3f}")
+    print(f"Coverage OOT: {cov_oot:.3f}")
+
+    # ===============================
+    # RETORNO FINAL (LINHA A LINHA)
+    # ===============================
+    return {
+        "train": {
+            "y_pred": mu_train,
+            "ic_inferior": lower_train,
+            "ic_superior": upper_train
+        },
+        "valid": {
+            "y_pred": mu_valid,
+            "ic_inferior": lower_valid,
+            "ic_superior": upper_valid
+        },
+        "test": {
+            "y_pred": mu_test,
+            "ic_inferior": lower_test,
+            "ic_superior": upper_test
+        },
+        "oot": {
+            "y_pred": mu_oot,
+            "ic_inferior": lower_oot,
+            "ic_superior": upper_oot
+        }
+    }
+
+def skpro_residual_double(target,x_train, y_train, x_valid, y_valid, x_test, y_test, x_oot, y_oot, modelo_otimizado, alpha=0.1, salvar = None):
+
+    if salvar:
+        # ===============================
+        # RESIDUAL DOUBLE (API ANTIGA)
+        # ===============================
+        skpro_residual_double = ResidualDouble(modelo_otimizado)
+        skpro_residual_double.fit(X=x_train,y=y_train[target].values)
+        carrega_salva_ic('salvar', skpro_residual_double)
+    else:
+
+        skpro_residual_double = carrega_salva_ic('carregar')
+        # ===============================
+        # FUNÇÃO DE IC
+        # ==============================n=
+        def predict_interval(X):
+            # Retorna um objeto de distribuição
+            dist = skpro_residual_double.predict_proba(X)
+
+            mu = dist.mean()
+            lower = dist.ppf(alpha / 2)
+            upper = dist.ppf(1 - alpha / 2)
+
+            return mu, lower, upper
+
+        # ===============================
+        # PREDIÇÕES
+        # ===============================
+        mu_train, lower_train, upper_train = predict_interval(x_train)
+        mu_valid, lower_valid, upper_valid = predict_interval(x_valid)
+        mu_test,  lower_test,  upper_test  = predict_interval(x_test)
+        mu_oot,   lower_oot,   upper_oot   = predict_interval(x_oot)
+
+        # ===============================
+        # COVERAGE
+        # ===============================
+        def coverage(y_true, lower, upper):
+            # .ravel() funciona tanto para DataFrames quanto para arrays numpy
+            return np.mean((np.array(y_true).ravel() >= np.array(lower).ravel()) & (np.array(y_true).ravel() <= np.array(upper).ravel()))
+
+        cov_train = coverage(y_train[target].values, lower_train, upper_train)
+        cov_valid = coverage(y_valid[target].values, lower_valid, upper_valid)
+        cov_test  = coverage(y_test[target].values,  lower_test,  upper_test)
+        cov_oot   = coverage(y_oot[target].values,   lower_oot,   upper_oot)
+
+        print(f"Coverage Treino: {cov_train:.3f}")
+        print(f"Coverage Validação: {cov_valid:.3f}")
+        print(f"Coverage Teste: {cov_test:.3f}")
+        print(f"Coverage OOT: {cov_oot:.3f}")
+
+        # ===============================
+        # RETORNO LINHA A LINHA
+        # ===============================
+        return {
+        "train": {
+                "y_pred": mu_train,
+                "ic_inferior": lower_train,
+                "ic_superior": upper_train
+            },
+            "valid": {
+                "y_pred": mu_valid,
+                "ic_inferior": lower_valid,
+                "ic_superior": upper_valid
+            },
+            "test": {
+                "y_pred": mu_test,
+                "ic_inferior": lower_test,
+                "ic_superior": upper_test
+            },
+            "oot": {
+                "y_pred": mu_oot,
+                "ic_inferior": lower_oot,
+                "ic_superior": upper_oot
+            }
+        }
+
 
 
