@@ -16,6 +16,8 @@ from matplotlib.ticker import FuncFormatter
 from matplotlib.gridspec import GridSpec
 from matplotlib.patches import Polygon
 from matplotlib.collections import PatchCollection
+import matplotlib.dates as mdates
+import matplotlib.colors as mcolors
 
 # Bibliotecas de Manipulação de Tempo
 from datetime import datetime, date, timedelta
@@ -1058,115 +1060,259 @@ def plot_kde_comparativo(df_train, df_valid, df_test, df_oot,
     plt.tight_layout()
     return fig
 
-def plot_kde_overlay(df_train, df_valid, df_test, df_oot, 
-                     figsize=(15, 8), palette='viridis'):
+def plot_bandas_temporais_unico(df_train, df_valid, df_test, df_oot, variavel_temporal, figsize=(16, 8)):
     """
-    Plota KDEs sobrepostos para comparação entre datasets
+    Plota um único gráfico com bandas de IC agrupadas pela variável temporal
     """
     
-    # Preparar dados combinados
+    # Combinar todos os datasets
     df_train['dataset'] = 'Treino'
     df_valid['dataset'] = 'Validação'
     df_test['dataset'] = 'Teste'
     df_oot['dataset'] = 'Out-of-Time'
     
-    combined = pd.concat([df_train, df_valid, df_test, df_oot])
+    df_combinado = pd.concat([df_train, df_valid, df_test, df_oot])
     
-    # Criar figura com subplots
-    fig, axes = plt.subplots(1, 3, figsize=figsize)
+    # Garantir que a variável temporal existe
+    if variavel_temporal not in df_combinado.columns:
+        raise ValueError(f"Variável temporal '{variavel_temporal}' não encontrada nos dados")
     
-    # Plotar para cada métrica
-    metrics = ['ic_inferior', 'y_predict', 'ic_superior']
-    metric_names = ['IC Inferior', 'Predição', 'IC Superior']
+    # Agrupar pela variável temporal
+    df_agrupado = df_combinado.groupby(variavel_temporal).agg({
+        'ic_inferior': 'mean',
+        'y_predict': 'mean',
+        'ic_superior': 'mean',
+        'tempo_entrega': 'mean' if 'tempo_entrega' in df_combinado.columns else None
+    }).reset_index().sort_values(variavel_temporal)
     
-    for idx, (metric, name) in enumerate(zip(metrics, metric_names)):
-        ax = axes[idx]
+    # Criar figura com fundo branco
+    fig, ax = plt.subplots(figsize=figsize, facecolor='white')
+    ax.set_facecolor('white')
+    
+    # Dados para plotagem
+    x = df_agrupado[variavel_temporal]
+    y_inf = df_agrupado['ic_inferior']
+    y_pred = df_agrupado['y_predict']
+    y_sup = df_agrupado['ic_superior']
+    
+    # 1. Preencher área entre as margens (cinza claro)
+    ax.fill_between(x, y_inf, y_sup, color='lightgray', alpha=0.3, label='Intervalo de Confiança')
+    
+    # 2. Linha da predição (azul contínua)
+    ax.plot(x, y_pred, color='blue', linewidth=2.5, marker='o', 
+            markersize=6, label='Predição Média', zorder=5)
+    
+    # 3. Margens (linhas pontilhadas pretas)
+    ax.plot(x, y_inf, color='black', linestyle='--', linewidth=1.5, label='IC Inferior', alpha=0.7)
+    ax.plot(x, y_sup, color='black', linestyle='--', linewidth=1.5, label='IC Superior', alpha=0.7)
+    
+    # Configurações do gráfico
+    ax.set_xlabel(variavel_temporal, fontsize=12, fontweight='bold')
+    ax.set_ylabel('Valor', fontsize=12, fontweight='bold')
+    ax.set_title(f'Bandas de IC do Modelo SKPRO Residual Double ao longo de {variavel_temporal}', fontsize=14, fontweight='bold')
+    #ax.legend(loc='upper left', fontsize=10)
+    ax.grid(True, alpha=0.3, linestyle='--')
+    
+    # REMOVER FUNDO CINZA DO GRID
+    ax.set_axisbelow(True)  # Coloca o grid atrás dos dados
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    
+    # ==============================================
+    # AJUSTAR LIMITES DO EIXO Y COM MARGEM DE 10%
+    # ==============================================
+    
+    # Calcular P1 do IC Inferior e P99 do IC Superior
+    p1_ic_inf = np.percentile(y_inf, 1)
+    p99_ic_sup = np.percentile(y_sup, 99)
+    
+    # Calcular range atual
+    y_range = p99_ic_sup - p1_ic_inf
+    
+    # Adicionar margem de 10%
+    margin = y_range * 0.10
+    
+    # Definir novos limites
+    y_min = p1_ic_inf - margin
+    y_max = p99_ic_sup + margin
+    
+    # Garantir que não temos valores negativos se não for apropriado
+    if y_min < 0 and all(y >= 0 for y in [y_inf.min(), y_pred.min(), y_sup.min()]):
+        y_min = 0  # Se todos os dados são não-negativos, começar em 0
+    
+    # Aplicar novos limites
+    ax.set_ylim(y_min, y_max)
+    
+    # Adicionar linhas de referência para os percentis
+    ax.axhline(y=p1_ic_inf, color='gray', linestyle=':', alpha=0.4, linewidth=0.8)
+    ax.axhline(y=p99_ic_sup, color='gray', linestyle=':', alpha=0.4, linewidth=0.8)
+    
+    # Adicionar informação da cobertura se tiver target
+    if 'tempo_entrega' in df_combinado.columns:
+        cobertura_total = ((df_combinado['tempo_entrega'] >= df_combinado['ic_inferior']) & 
+                          (df_combinado['tempo_entrega'] <= df_combinado['ic_superior'])).mean()
         
-        for dataset in combined['dataset'].unique():
-            subset = combined[combined['dataset'] == dataset]
-            sns.kdeplot(data=subset[metric], ax=ax, 
-                       label=dataset, linewidth=2)
+        # Calcular cobertura por período
+        df_combinado['dentro_ic'] = ((df_combinado['tempo_entrega'] >= df_combinado['ic_inferior']) & 
+                                     (df_combinado['tempo_entrega'] <= df_combinado['ic_superior'])).astype(int)
         
-        ax.set_title(f'Distribuição do {name}', fontsize=13, fontweight='bold')
-        ax.set_xlabel(name, fontsize=11)
-        ax.set_ylabel('Densidade', fontsize=11)
-        ax.legend(loc='upper right')
-        ax.grid(True, alpha=0.3)
+        cobertura_por_periodo = df_combinado.groupby(variavel_temporal)['dentro_ic'].mean().reset_index()
+        
+        # # Adicionar texto com cobertura total
+        # ax.text(0.98, 0.98, f'Cobertura: {cobertura_total:.1%}', 
+        #        transform=ax.transAxes, fontsize=10,
+        #        verticalalignment='top', horizontalalignment='right',
+        #        bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
     
-    plt.suptitle('Comparação entre Datasets - Distribuições das Métricas', 
-                fontsize=16, fontweight='bold', y=1.05)
+    # # Adicionar informação do número de amostras
+    # contagem_por_periodo = df_combinado.groupby(variavel_temporal).size()
+    # ax.text(0.98, 0.90, f'Amostras/período: {contagem_por_periodo.mean():.0f}', 
+    #        transform=ax.transAxes, fontsize=9,
+    #        verticalalignment='top', horizontalalignment='right',
+    #        bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+    
+    # Rotacionar labels se forem datas ou strings longas
+    if (df_agrupado[variavel_temporal].dtype == 'object' or 
+        pd.api.types.is_string_dtype(df_agrupado[variavel_temporal]) or
+        len(x) > 8):  # Se muitos pontos, rotacionar
+        plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
+    
     plt.tight_layout()
     return fig
 
-def plot_series_temporais_com_ic(df_train, df_valid, df_test, df_oot, window_size=7, figsize=(18, 12)):
-    """
-    Plota séries temporais com médias móveis e intervalos de confiança
-    """
-    
-    fig, axes = plt.subplots(4, 1, figsize=figsize, sharex=False)
-    
-    datasets = [
-        ("Treino", df_train, axes[0]),
-        ("Validação", df_valid, axes[1]),
-        ("Teste", df_test, axes[2]),
-        ("Out-of-Time", df_oot, axes[3])
-    ]
-    
-    for nome, df, ax in datasets:
-        # Ordenar por data
-        if 'data_pedido' in df.columns:
-            df = df.sort_values('data_pedido')
-        
-        # Calcular médias móveis
-        df_agg = df.copy()
-        df_agg['mean_inf'] = df_agg['ic_inferior'].rolling(window=window_size).mean()
-        df_agg['mean_pred'] = df_agg['y_predict'].rolling(window=window_size).mean()
-        df_agg['mean_sup'] = df_agg['ic_superior'].rolling(window=window_size).mean()
-        
-        # Calcular desvio padrão para sombreamento
-        df_agg['std_inf'] = df_agg['ic_inferior'].rolling(window=window_size).std()
-        df_agg['std_pred'] = df_agg['y_predict'].rolling(window=window_size).std()
-        df_agg['std_sup'] = df_agg['ic_superior'].rolling(window=window_size).std()
-        
-        # Índice para plotagem
-        x = range(len(df_agg)) if 'data_pedido' not in df.columns else df_agg['data_pedido']
-        
-        # Plotar médias móveis
-        ax.plot(x, df_agg['mean_inf'], color='blue', linewidth=2, label='Média IC Inferior')
-        ax.plot(x, df_agg['mean_pred'], color='green', linewidth=2.5, label='Média Predição')
-        ax.plot(x, df_agg['mean_sup'], color='red', linewidth=2, label='Média IC Superior')
-        
-        # Adicionar sombreamento para intervalo de confiança
-        ax.fill_between(x, 
-                       df_agg['mean_inf'] - df_agg['std_inf'],
-                       df_agg['mean_inf'] + df_agg['std_inf'],
-                       color='blue', alpha=0.2, label='±1σ IC Inf')
-        
-        ax.fill_between(x, 
-                       df_agg['mean_pred'] - df_agg['std_pred'],
-                       df_agg['mean_pred'] + df_agg['std_pred'],
-                       color='green', alpha=0.2, label='±1σ Pred')
-        
-        ax.fill_between(x, 
-                       df_agg['mean_sup'] - df_agg['std_sup'],
-                       df_agg['mean_sup'] + df_agg['std_sup'],
-                       color='red', alpha=0.2, label='±1σ IC Sup')
-        
-        # Configurações
-        ax.set_title(f'{nome} - Séries Temporais com IC', fontsize=13, fontweight='bold')
-        ax.set_xlabel('Data' if 'data_pedido' in df.columns else 'Índice', fontsize=11)
-        ax.set_ylabel('Valor', fontsize=11)
-        ax.legend(loc='upper left', fontsize=9)
-        ax.grid(True, alpha=0.3)
-        
-        # Rotacionar labels de data se necessário
-        if 'data_pedido' in df.columns:
-            plt.setp(ax.xaxis.get_majorticklabels(), rotation=45)
-    
-    plt.suptitle('Evolução Temporal das Médias Móveis com Intervalos de Confiança', 
-                fontsize=16, fontweight='bold', y=1.02)
-    plt.tight_layout()
-    return fig
+
+def compute_shap_importance_df(model, X, max_display=30, threshold=0.0):
+
+    explainer = shap.TreeExplainer(model)
+    shap_values = explainer.shap_values(X)
+
+    mean_abs_shap = np.abs(shap_values).mean(axis=0)
+
+    importance_df = (
+        pd.DataFrame({
+            "feature": X.columns,
+            "importance": mean_abs_shap
+        })
+        .query("importance > @threshold")
+        .sort_values("importance", ascending=False)
+        .head(max_display)
+        .reset_index(drop=True)
+    )
+
+    importance_df["importance_pct"] = (importance_df["importance"]/ importance_df["importance"].sum()* 100)
+
+    return importance_df, shap_values
+
+def plot_shap_importance_with_books(
+    importance_df,
+    books,
+    titulo,
+    figsize=(16, 8)
+):
+
+    # ===============================
+    # MAPA FEATURE → BOOK
+    # ===============================
+    feature_to_book = {
+        f: book
+        for book, features in books.items()
+        for f in features
+    }
+
+    importance_df = importance_df.copy()
+    importance_df["book"] = (
+        importance_df["feature"]
+        .map(feature_to_book)
+        .fillna("Outros")
+    )
+
+    # ===============================
+    # AGREGAÇÃO POR BOOK
+    # ===============================
+    book_importance_df = (
+        importance_df
+        .groupby("book", as_index=False)["importance_pct"]
+        .sum()
+        .sort_values("importance_pct", ascending=False)
+    )
+
+    # ===============================
+    # NORMALIZAÇÃO + COLORMAP SHAP
+    # ===============================
+    cmap = shap.plots.colors.red_blue
+    norm_feat = mcolors.Normalize(
+        vmin=importance_df["importance_pct"].min(),
+        vmax=importance_df["importance_pct"].max()
+    )
+
+    norm_book = mcolors.Normalize(
+        vmin=book_importance_df["importance_pct"].min(),
+        vmax=book_importance_df["importance_pct"].max()
+    )
+
+    colors_feat = cmap(norm_feat(importance_df["importance_pct"].values))
+    colors_book = cmap(norm_book(book_importance_df["importance_pct"].values))
+
+    # ===============================
+    # PLOT
+    # ===============================
+    fig, axes = plt.subplots(
+        1, 2,
+        figsize=figsize,
+        gridspec_kw={"width_ratios": [1.7, 1], "wspace": 0.35}
+    )
+
+    # ------------------------------------------------
+    # BARRAS POR FEATURE
+    # ------------------------------------------------
+    axes[0].barh(
+        importance_df["feature"][::-1],
+        importance_df["importance_pct"][::-1],
+        color=colors_feat[::-1]
+    )
+
+    for i, v in enumerate(importance_df["importance_pct"][::-1]):
+        axes[0].text(
+            v + 0.3,
+            i,
+            f"{v:.1f}%",
+            va="center",
+            fontsize=9
+        )
+
+    axes[0].set_title("Importância SHAP por Feature (%)", fontsize=13)
+    axes[0].set_xlabel("Importância (%)")
+    axes[0].grid(axis="x", alpha=0.3)
+
+    # ------------------------------------------------
+    # BARRAS POR BOOK
+    # ------------------------------------------------
+    axes[1].barh(
+        book_importance_df["book"][::-1],
+        book_importance_df["importance_pct"][::-1],
+        color=colors_book[::-1]
+    )
+
+    for i, v in enumerate(book_importance_df["importance_pct"][::-1]):
+        axes[1].text(
+            v + 0.3,
+            i,
+            f"{v:.1f}%",
+            va="center",
+            fontsize=10
+        )
+
+    axes[1].set_title("Importância SHAP por Book (%)", fontsize=13)
+    axes[1].set_xlabel("Importância (%)")
+    axes[1].grid(axis="x", alpha=0.3)
+
+    # ===============================
+    # TÍTULO GERAL
+    # ===============================
+    fig.suptitle(titulo, fontsize=15)
+    plt.subplots_adjust(top=0.9)
+    plt.show()
+
 
 def separa_feature_target(target, dados):
         x = dados.drop(target, axis=1)
