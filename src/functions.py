@@ -1313,6 +1313,46 @@ def plot_shap_importance_with_books(
     plt.subplots_adjust(top=0.9)
     plt.show()
 
+def plot_shap_one_sample(model, X, position_sample, titulo):
+
+    # Pega o modelo dentro do pipeline
+    model_lgbm = model
+    X_single = X.loc[[position_sample]]
+    explainer = shap.Explainer(model_lgbm, X)
+    shap_values = explainer(X_single)
+    shap.plots.waterfall(shap_values[0])
+
+def plot_shap_one_sample_original_scale(model, X, position_sample, titulo):
+
+    # Seleciona uma observação
+    X_single = X.loc[[position_sample]]
+
+    # Explainer
+    explainer = shap.Explainer(model, X)
+    shap_values = explainer(X_single)
+
+    # Valores no espaço log
+    phi = shap_values.values[0]
+    base_log = shap_values.base_values[0]
+
+    # Predição final na escala original
+    y_pred = np.exp(base_log + phi.sum())
+
+    # Contribuições na escala original (efeito marginal)
+    contrib_original = np.exp(base_log + np.cumsum(phi)) - np.exp(
+        base_log + np.cumsum(np.r_[0, phi[:-1]])
+    )
+
+    # Novo objeto SHAP na escala original
+    shap_exp = shap.Explanation(
+        values=contrib_original,
+        base_values=np.exp(base_log),
+        data=X_single.values[0],
+        feature_names=X.columns
+    )
+
+    shap.plots.waterfall(shap_exp, show=True)
+
 
 def separa_feature_target(target, dados):
         x = dados.drop(target, axis=1)
